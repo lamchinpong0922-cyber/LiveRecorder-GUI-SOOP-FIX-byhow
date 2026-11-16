@@ -206,6 +206,7 @@ def save_rooms(rooms: list[dict]) -> None:
     URL_CONFIG.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+
 class Recorder:
     def __init__(self) -> None:
         self.process: subprocess.Popen[str] | None = None
@@ -214,67 +215,148 @@ class Recorder:
         self.lock = threading.Lock()
         self.started_at: float | None = None
         self.windows_job = create_kill_on_close_job()
+        self.stop_sentinel = CORE / "STOP_ALL_REQUESTED"
 
     @property
     def running(self) -> bool:
         return bool(self.process and self.process.poll() is None)
 
     def append(self, text: str, level: str = "info") -> None:
-        text = TO_TRADITIONAL.convert(re.sub(r"\x1b\[[0-9;]*m", "", text).rstrip())
+        text = TO_TRADITIONAL.convert(
+            re.sub(r"\x1b\[[0-9;]*m", "", text).rstrip()
+        )
         if not text:
             return
+
         with self.lock:
             self.sequence += 1
-            self.logs.append({"id": self.sequence, "text": text, "level": level, "time": time.strftime("%H:%M:%S")})
+            self.logs.append({
+                "id": self.sequence,
+                "text": text,
+                "level": level,
+                "time": time.strftime("%H:%M:%S")
+            })
 
     def start(self) -> tuple[bool, str]:
         if self.running:
             return False, "錄製核心已在執行"
+
         if not any(room["enabled"] for room in parse_rooms()):
             return False, "請先啟用至少一個直播間"
+
+        # 清除上一次的停止訊號，允許重新啟動核心
+        try:
+            self.stop_sentinel.unlink(missing_ok=True)
+        except OSError as exc:
+            self.append(f"無法清除停止訊號：{exc}", "error")
+            return False, "無法清除上一次的停止訊號"
+
         command, core_cwd = core_command()
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        env = os.environ.copy()
-        env.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
-        self.process = subprocess.Popen(
-            command, cwd=core_cwd,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace", creationflags=flags, env=env,
+
+        flags = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            if os.name == "nt" else 0
         )
-        if os.name == "nt" and self.windows_job and not assign_to_job(self.windows_job, self.process._handle):
-            self.append("警告：無法建立程序連動關閉，關閉視窗前請先停止所有直播", "error")
+
+        env = os.environ.copy()
+        env.update({
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8"
+        })
+
+        try:
+            self.process = subprocess.Popen(
+                command,
+                cwd=core_cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+                env=env,
+            )
+        except Exception as exc:
+            self.append(f"核心啟動失敗：{exc}", "error")
+            return False, f"核心啟動失敗：{exc}"
+
+        if (
+            os.name == "nt"
+            and self.windows_job
+            and not assign_to_job(self.windows_job, self.process._handle)
+        ):
+            self.append(
+                "警告：無法建立程序連動關閉，請確認核心及 FFmpeg 是否正常結束",
+                "error"
+            )
+
         self.started_at = time.time()
         self.append("=== 錄製核心已啟動 ===", "success")
-        threading.Thread(target=self._read, daemon=True).start()
+
+        threading.Thread(
+            target=self._read,
+            args=(self.process,),
+            daemon=True
+        ).start()
+
         return True, "錄製核心已啟動"
 
-    def _read(self) -> None:
-        assert self.process and self.process.stdout
-        for line in self.process.stdout:
-            level = "error" if "ERROR" in line or "錯誤" in line else "info"
-            self.append(line, level)
-        code = self.process.wait()
-        self.append(f"=== 錄製核心已結束（代碼 {code}）===", "error" if code else "success")
+    def _read(self, process: subprocess.Popen[str]) -> None:
+        if process.stdout:
+            for line in process.stdout:
+                level = "error" if "ERROR" in line or "錯誤" in line else "info"
+                self.append(line, level)
+
+        code = process.wait()
+
+        self.append(
+            f"=== 錄製核心已結束（代碼 {code}）===",
+            "error" if code else "success"
+        )
 
     def stop(self) -> tuple[bool, str]:
         if not self.running:
             return False, "錄製核心尚未執行"
-        assert self.process
-        pid = self.process.pid
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-        else:
-            self.process.send_signal(signal.SIGTERM)
-        self.append("正在停止錄製核心…")
-        return True, "停止指令已送出"
+
+        # 不使用 taskkill，不強制終止 FFmpeg。
+        # 由核心自行停止直播、完成 TS 收尾及 MP4 轉檔。
+        try:
+            self.stop_sentinel.parent.mkdir(parents=True, exist_ok=True)
+            self.stop_sentinel.write_text(
+                "STOP_ALL",
+                encoding="utf-8"
+            )
+        except OSError as exc:
+            self.append(f"建立停止訊號失敗：{exc}", "error")
+            return False, f"無法通知核心停止：{exc}"
+
+        self.append("已通知核心停止全部錄製，正在等待檔案收尾及轉檔…")
+        return True, "停止訊號已送出，核心將自行完成收尾及轉檔"
 
     def get_logs(self, since: int) -> list[dict]:
         with self.lock:
-            return [item for item in self.logs if item["id"] > since]
+            return [
+                item for item in self.logs
+                if item["id"] > since
+            ]
 
     def close(self) -> None:
+        # 真正結束 GUI 時，先通知核心正常停止。
+        if self.running:
+            self.stop()
+
+        # 等待核心結束。
+        # 核心的非 daemon 錄製工作及轉檔工作完成後才會退出。
+        if self.process is not None:
+            try:
+                self.process.wait()
+            except Exception as exc:
+                self.append(f"等待錄製核心結束時發生錯誤：{exc}", "error")
+
+        # 核心及其 FFmpeg 子程序已退出後，才關閉 Job Object。
         close_job(self.windows_job)
         self.windows_job = None
+
 
 
 RECORDER = Recorder()

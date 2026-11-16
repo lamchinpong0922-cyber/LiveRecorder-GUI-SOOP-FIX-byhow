@@ -134,15 +134,8 @@ def main() -> None:
         messagebox.showerror("缺少錄製核心", f"找不到：\n{CORE / 'main.py'}")
         return
 
-    try:
-        from desktop_runtime import run_mode_picker
-        selected_mode = run_mode_picker()
-    except Exception as exc:
-        messagebox.showwarning("新版啟動器無法啟動", f"React 啟動器無法啟動：\n{exc}\n\n將開啟備用選擇視窗。")
-        launch_legacy_picker()
-        return
-    if selected_mode == "web":
-        launch_web()
+    launch_desktop()
+    return
 
 
 if __name__ == "__main__":

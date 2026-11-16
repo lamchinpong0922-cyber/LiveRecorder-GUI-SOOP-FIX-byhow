@@ -60,6 +60,14 @@ text_no_repeat_url = []
 create_var = locals()
 first_start = True
 exit_recording = False
+STOP_SENTINEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "STOP_ALL_REQUESTED"
+)
+
+
+def is_stop_all_requested() -> bool:
+    return os.path.isfile(STOP_SENTINEL_PATH)
 need_update_line_list = []
 first_run = True
 not_record_list = []
@@ -419,68 +427,137 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
                 chunk_size = 1024 * 16
 
                 for chunk in response.iter_bytes(chunk_size):
-                    if live_url in url_comments or exit_recording:
-                        color_obj.print_colored(f"[{record_name}]录制时已被注释或请求停止,下载中断", color_obj.YELLOW)
+                    if live_url in url_comments or exit_recording or is_stop_all_requested():
+                        color_obj.print_colored(
+                            f"[{record_name}]录制时已被注释或请求停止,下载中断",
+                            color_obj.YELLOW
+                        )
                         clear_record_info(record_name, live_url)
                         return False
 
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
+
                 print()
                 return True
+
     except Exception as e:
         logger.error(f"FLV下载错误: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
         return False
 
 
+
+
+
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
                      script_command: str | None = None) -> bool:
     save_file_path = ffmpeg_command[-1]
+
     process = subprocess.Popen(
-        ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
+        ffmpeg_command,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        startupinfo=get_startup_info(os_type)
     )
 
     subs_file_path = save_file_path.rsplit('.', maxsplit=1)[0]
     subs_thread_name = f'subs_{Path(subs_file_path).name}'
+
     if create_time_file and not split_video_by_time and '音频' not in save_type:
         create_var[subs_thread_name] = threading.Thread(
-            target=generate_subtitles, args=(record_name, subs_file_path)
+            target=generate_subtitles,
+            args=(record_name, subs_file_path)
         )
         create_var[subs_thread_name].daemon = True
         create_var[subs_thread_name].start()
 
+    stop_requested = False
+    stop_all_requested = False
+
     while process.poll() is None:
-        if record_url in url_comments or is_record_url_disabled(record_url) or exit_recording:
-            color_obj.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", color_obj.YELLOW)
+        stop_all_requested = is_stop_all_requested()
+
+        if (
+            record_url in url_comments
+            or is_record_url_disabled(record_url)
+            or exit_recording
+            or stop_all_requested
+        ):
+            stop_requested = True
+
+            color_obj.print_colored(
+                f"[{record_name}]收到停止要求，正在通知 FFmpeg 正常结束",
+                color_obj.YELLOW
+            )
+
             clear_record_info(record_name, record_url)
-            # process.terminate()
-            if os.name == 'nt':
-                if process.stdin:
-                    process.stdin.write(b'q')
-                    process.stdin.close()
-            else:
-                process.send_signal(signal.SIGINT)
-            process.wait()
-            return True
+
+            try:
+                if os.name == 'nt':
+                    if process.stdin and not process.stdin.closed:
+                        process.stdin.write(b'q')
+                        process.stdin.flush()
+                        process.stdin.close()
+                else:
+                    process.send_signal(signal.SIGINT)
+
+            except (BrokenPipeError, OSError, ProcessLookupError):
+                pass
+
+            break
+
         time.sleep(1)
 
-    return_code = process.returncode
+    # 等待 FFmpeg 真正結束，確保 TS 寫入完成
+    try:
+        return_code = process.wait()
+    except Exception as e:
+        logger.error(f"等待 FFmpeg 結束失敗: {e}")
+        return_code = process.returncode
+
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
+
     if return_code == 0:
-        if converts_to_mp4 and save_type == 'TS':
-            if split_video_by_time:
-                file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
-                for path in file_paths:
-                    if prefix in path:
-                        threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
-            else:
-                threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file)).start()
-        print(f"\n{record_name} {stop_time} 直播录制完成\n")
+        if save_type == 'TS' and (converts_to_mp4 or stop_all_requested):
+            try:
+                if split_video_by_time:
+                    file_paths = utils.get_file_paths(
+                        os.path.dirname(save_file_path)
+                    )
+
+                    prefix = os.path.basename(save_file_path).rsplit(
+                        '_', maxsplit=1
+                    )[0]
+
+                    for path in file_paths:
+                        if prefix in path and path.lower().endswith('.ts'):
+                            convert_thread = threading.Thread(
+                                target=converts_mp4,
+                                args=(
+                                    path,
+                                    False if stop_all_requested else delete_origin_file
+                                )
+                            )
+                            convert_thread.start()
+                else:
+                    convert_thread = threading.Thread(
+                        target=converts_mp4,
+                        args=(
+                            save_file_path,
+                            False if stop_all_requested else delete_origin_file
+                        )
+                    )
+                    convert_thread.start()
+
+            except Exception as e:
+                logger.error(f"TS 轉 MP4 啟動失敗：{e}")
+
+        print(f"\n{record_name} {stop_time} 直播錄製完成\n")
 
         if script_command:
-            logger.debug("开始执行脚本命令!")
+            logger.debug("開始執行腳本命令!")
+
             if "python" in script_command:
                 params = [
                     f'--record_name "{record_name}"',
@@ -497,15 +574,28 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                     f'split_video_by_time:{split_video_by_time}',
                     f'converts_to_mp4:{converts_to_mp4}'
                 ]
-            script_command = script_command.strip() + ' ' + ' '.join(params)
+
+            script_command = (
+                script_command.strip() + ' ' + ' '.join(params)
+            )
+
             run_script(script_command)
-            logger.debug("脚本命令执行结束!")
+            logger.debug("腳本命令執行結束!")
 
     else:
-        color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
+        color_obj.print_colored(
+            f"\n{record_name} {stop_time} 直播錄製出錯，返回碼: {return_code}\n",
+            color_obj.RED
+        )
 
     recording.discard(record_name)
+
+    if stop_requested:
+        return True
+
     return False
+
+
 
 
 def clean_name(input_text):
@@ -569,6 +659,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
     global error_count
 
     while True:
+        if is_stop_all_requested():
+            logger.info("收到整體停止要求，停止此直播工作")
+            return
+
         try:
             record_finished = False
             run_once = False
@@ -598,6 +692,43 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             # print(f'\r代理地址:{proxy_address}')
             # print(f'\r全局代理:{global_proxy}')
             while True:
+                if is_stop_all_requested():
+                    logger.info("收到整體停止要求，停止直播網址檢查")
+                    return
+
+                try:
+                    port_info = []
+
+            record_finished = False
+            run_once = False
+            start_pushed = False
+            new_record_url = ''
+            count_time = time.time()
+            retry = 0
+            record_quality_zh, record_url, anchor_name = url_data
+            record_quality = get_quality_code(record_quality_zh)
+            proxy_address = proxy_addr
+            platform = '未知平台'
+            live_domain = '/'.join(record_url.split('/')[0:3])
+
+            if proxy_addr:
+                proxy_address = None
+                for platform in enable_proxy_platform_list:
+                    if platform and platform.strip() in record_url:
+                        proxy_address = proxy_addr
+                        break
+
+            if not proxy_address:
+                if extra_enable_proxy_platform_list:
+                    for pt in extra_enable_proxy_platform_list:
+                        if pt and pt.strip() in record_url:
+                            proxy_address = proxy_addr_bak or None
+
+            # print(f'\r代理地址:{proxy_address}')
+            # print(f'\r全局代理:{global_proxy}')
+            while True:
+                if is_stop_all_requested():
+                    return
                 try:
                     port_info = []
                     if record_url.find("douyin.com/") > -1:
@@ -1818,10 +1949,27 @@ except Exception as err:
 
 while True:
 
+    # 收到整體停止訊號時，停止新增工作並等待現有工作完成
+    if is_stop_all_requested():
+        logger.info("收到整體停止要求，準備停止錄製核心")
+
+        for thread_name, worker_thread in list(create_var.items()):
+            if (
+                thread_name.startswith("thread_")
+                and worker_thread is not threading.current_thread()
+                and worker_thread.is_alive()
+            ):
+                logger.info(f"等待錄製工作結束：{thread_name}")
+                worker_thread.join()
+
+        logger.info("所有錄製工作已結束，錄製核心準備退出")
+        break
+
     try:
         if not os.path.isfile(config_file):
             with open(config_file, 'w', encoding=text_encoding) as file:
                 pass
+
 
         ini_URL_content = ''
         if os.path.isfile(url_config_file):
@@ -2165,6 +2313,9 @@ while True:
 
         if len(text_no_repeat_url) > 0:
             for url_tuple in text_no_repeat_url:
+                if is_stop_all_requested():
+                    break
+
                 monitoring = len(running_list)
 
                 if url_tuple[1] in not_record_list:
@@ -2174,13 +2325,18 @@ while True:
                     print(f"\r{'新增' if not first_start else '传入'}地址: {url_tuple[1]}")
                     monitoring += 1
                     args = [url_tuple, monitoring]
-                    create_var[f'thread_{monitoring}'] = threading.Thread(target=start_record, args=args)
-                    create_var[f'thread_{monitoring}'].daemon = True
+                    create_var[f'thread_{monitoring}'] = threading.Thread(
+                        target=start_record,
+                        args=args
+                    )
+                    create_var[f'thread_{monitoring}'].daemon = False
                     create_var[f'thread_{monitoring}'].start()
                     running_list.append(url_tuple[1])
                     time.sleep(local_delay_default)
+
         url_tuples_list = []
         first_start = False
+
 
     except Exception as err:
         logger.error(f"错误信息: {err} 发生错误的行数: {err.__traceback__.tb_lineno}")
