@@ -939,7 +939,7 @@ export default function RecorderApp() {
                   <span className="room-text">
                     <strong>{label(room)}</strong>
                     <small>
-                      {room.quality} 繚{" "}
+                      {room.quality} {" "}
                       {isRoomRecording(room) ? (
                         <span style={{ color: "#3b82f6", fontWeight: 600 }}>
                           {language === "en" ? "Recording" : "正在錄製中"}
@@ -986,7 +986,7 @@ export default function RecorderApp() {
         </ScrollArea>
 
         <div className="sidebar-footer">
-          <span>LIVE RECORDER 繚 v0.4.3</span>
+          <span>LIVE RECORDER  v0.4.3</span>
 
           <div className="sidebar-preferences">
             <LanguageToggle />
@@ -1310,11 +1310,11 @@ export default function RecorderApp() {
               <Square />
               {stopPending
                 ? language === "en"
-                  ? "Stopping and converting..."
-                  : "正在停止錄製並轉換 MP4..."
+                  ? "Stopping and finishing conversion..."
+                  : "正在停止錄製並完成轉檔..."
                 : language === "en"
-                  ? "Stop all and convert to MP4"
-                  : "停止全部並轉 MP4"}
+                  ? "Exit and finish conversion"
+                  : "退出並完成轉檔"}
             </Button>
 
             <Button

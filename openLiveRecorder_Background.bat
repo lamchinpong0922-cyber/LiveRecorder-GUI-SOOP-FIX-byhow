@@ -58,6 +58,23 @@ if errorlevel 1 (
 "%PYTHON%" -c "import PIL, pystray, webview" >> "%LOG%" 2>&1
 if errorlevel 1 goto FAIL
 echo Starting desktop application in background mode... >> "%LOG%"
+REM === AUTO BUILD DESKTOP UI ===
+echo.
+echo [BUILD] Building desktop UI...
+pushd "%~dp0desktop-ui"
+call npm.cmd run build
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Frontend build failed. Application was NOT started.
+    popd
+    echo.
+    echo Please check the build errors above.
+    pause
+    exit /b 1
+)
+popd
+echo [BUILD] Frontend build completed successfully.
+echo.
 start "" "%PYTHONW%" launcher.py --desktop --minimize-after-5
 
 if errorlevel 1 (

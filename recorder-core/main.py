@@ -725,7 +725,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
     # 停止全部時，不論 FFmpeg 回傳碼是否為 0，
     # 都嘗試處理已經完成寫入的 TS。
-    if save_type == 'TS' and (converts_to_mp4 or stop_all_requested):
+    if save_type == 'TS' and converts_to_mp4:
 
         if stop_all_requested:
             try:
@@ -760,7 +760,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                             converted = converts_mp4(
                                 path,
                                 is_original_delete=False,
-                                force_copy=True
+                                force_copy=False
                             )
 
                             record_stop_conversion_result(
@@ -787,7 +787,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                     converted = converts_mp4(
                         save_file_path,
                         is_original_delete=False,
-                        force_copy=True
+                        force_copy=False
                     )
 
                     record_stop_conversion_result(
