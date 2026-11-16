@@ -228,39 +228,89 @@ def segment_video(converts_file_path: str, segment_save_file_path: str, segment_
         logger.error(f'An unknown error occurred: {e}')
 
 
-def converts_mp4(converts_file_path: str, is_original_delete: bool = True) -> None:
+def converts_mp4(
+    converts_file_path: str,
+    is_original_delete: bool = True,
+    force_copy: bool = False
+) -> bool:
+    output_file_path = converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4"
+
     try:
-        if os.path.exists(converts_file_path) and os.path.getsize(converts_file_path) > 0:
-            if converts_to_h264:
-                color_obj.print_colored("正在转码为MP4格式并重新编码为h264\n", color_obj.YELLOW)
-                ffmpeg_command = [
-                    "ffmpeg", "-i", converts_file_path,
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "23",
-                    "-vf", "format=yuv420p",
-                    "-c:a", "copy",
-                    "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
-                ]
-            else:
-                color_obj.print_colored("正在转码为MP4格式\n", color_obj.YELLOW)
-                ffmpeg_command = [
-                    "ffmpeg", "-i", converts_file_path,
-                    "-c:v", "copy",
-                    "-c:a", "copy",
-                    "-f", "mp4", converts_file_path.rsplit('.', maxsplit=1)[0] + ".mp4",
-                ]
-            _output = subprocess.check_output(
-                ffmpeg_command, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
+        if not os.path.exists(converts_file_path):
+            logger.error(f"MP4 轉檔失敗，找不到原始檔案：{converts_file_path}")
+            return False
+
+        if os.path.getsize(converts_file_path) <= 0:
+            logger.error(f"MP4 轉檔失敗，原始檔案是空檔案：{converts_file_path}")
+            return False
+
+        if not force_copy and converts_to_h264:
+            color_obj.print_colored(
+                "正在轉碼為MP4格式並重新編碼為h264\n",
+                color_obj.YELLOW
             )
-            if is_original_delete:
-                time.sleep(1)
-                if os.path.exists(converts_file_path):
-                    os.remove(converts_file_path)
+
+            ffmpeg_command = [
+                "ffmpeg",
+                "-y",
+                "-i", converts_file_path,
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "23",
+                "-vf", "format=yuv420p",
+                "-c:a", "copy",
+                "-f", "mp4",
+                output_file_path,
+            ]
+
+        else:
+            color_obj.print_colored(
+                "正在以不重新編碼方式轉換MP4格式\n",
+                color_obj.YELLOW
+            )
+
+            ffmpeg_command = [
+                "ffmpeg",
+                "-y",
+                "-i", converts_file_path,
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-f", "mp4",
+                output_file_path,
+            ]
+
+        subprocess.run(
+            ffmpeg_command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=True,
+            startupinfo=get_startup_info(os_type)
+        )
+
+        if (
+            not os.path.isfile(output_file_path)
+            or os.path.getsize(output_file_path) <= 0
+        ):
+            logger.error(f"MP4 轉檔未產生有效檔案：{output_file_path}")
+            return False
+
+        logger.info(f"MP4 轉檔成功：{output_file_path}")
+
+        if is_original_delete:
+            time.sleep(1)
+            if os.path.exists(converts_file_path):
+                os.remove(converts_file_path)
+
+        return True
+
     except subprocess.CalledProcessError as e:
-        logger.error(f'Error occurred during conversion: {e}')
+        logger.error(f"MP4 轉檔失敗：{converts_file_path}，錯誤：{e}")
+        return False
+
     except Exception as e:
-        logger.error(f'An unknown error occurred: {e}')
+        logger.error(f"MP4 轉檔發生未知錯誤：{converts_file_path}，錯誤：{e}")
+        return False
 
 
 def converts_m4a(converts_file_path: str, is_original_delete: bool = True) -> None:
@@ -464,7 +514,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     subs_file_path = save_file_path.rsplit('.', maxsplit=1)[0]
     subs_thread_name = f'subs_{Path(subs_file_path).name}'
 
-    if create_time_file and not split_video_by_time and '音频' not in save_type:
+    if create_time_file and not split_video_by_time and '音頻' not in save_type:
         create_var[subs_thread_name] = threading.Thread(
             target=generate_subtitles,
             args=(record_name, subs_file_path)
@@ -509,16 +559,25 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
         time.sleep(1)
 
-    # 等待 FFmpeg 真正結束，確保 TS 寫入完成
+    # 等待 FFmpeg 真正結束，確保 TS 已經寫入完成
     try:
         return_code = process.wait()
     except Exception as e:
         logger.error(f"等待 FFmpeg 結束失敗: {e}")
         return_code = process.returncode
 
+    # 再檢查一次，避免停止訊號剛好在 FFmpeg 結束時送達而漏掉
+    stop_all_requested = (
+        stop_all_requested or is_stop_all_requested()
+    )
+
+    if stop_all_requested:
+        stop_requested = True
+
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
 
     if return_code == 0:
+
         if save_type == 'TS' and (converts_to_mp4 or stop_all_requested):
             try:
                 if split_video_by_time:
@@ -530,25 +589,41 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         '_', maxsplit=1
                     )[0]
 
-                    for path in file_paths:
-                        if prefix in path and path.lower().endswith('.ts'):
+                    ts_files = [
+                        path for path in file_paths
+                        if prefix in path and path.lower().endswith('.ts')
+                    ]
+
+                    for path in ts_files:
+                        if stop_all_requested:
+                            # 停止全部：同步轉檔，強制不重新編碼，保留 TS
+                            converts_mp4(
+                                path,
+                                is_original_delete=False,
+                                force_copy=True
+                            )
+                        else:
+                            # 一般自動轉檔：保留原本非同步行為
                             convert_thread = threading.Thread(
                                 target=converts_mp4,
-                                args=(
-                                    path,
-                                    False if stop_all_requested else delete_origin_file
-                                )
+                                args=(path, delete_origin_file)
                             )
                             convert_thread.start()
+
                 else:
-                    convert_thread = threading.Thread(
-                        target=converts_mp4,
-                        args=(
+                    if stop_all_requested:
+                        # 停止全部：同步轉檔，完成後才允許核心退出
+                        converts_mp4(
                             save_file_path,
-                            False if stop_all_requested else delete_origin_file
+                            is_original_delete=False,
+                            force_copy=True
                         )
-                    )
-                    convert_thread.start()
+                    else:
+                        convert_thread = threading.Thread(
+                            target=converts_mp4,
+                            args=(save_file_path, delete_origin_file)
+                        )
+                        convert_thread.start()
 
             except Exception as e:
                 logger.error(f"TS 轉 MP4 啟動失敗：{e}")
@@ -1670,18 +1745,6 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 custom_script
                                             )
                                             if comment_end:
-                                                if converts_to_mp4:
-                                                    file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
-                                                    prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
-                                                    for path in file_paths:
-                                                        if prefix in path:
-                                                            try:
-                                                                threading.Thread(
-                                                                    target=converts_mp4,
-                                                                    args=(path, delete_origin_file)
-                                                                ).start()
-                                                            except subprocess.CalledProcessError as e:
-                                                                logger.error(f"转码失败: {e} ")
                                                 return
 
                                         except subprocess.CalledProcessError as e:
@@ -1714,9 +1777,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 custom_script
                                             )
                                             if comment_end:
-                                                threading.Thread(
-                                                    target=converts_mp4, args=(save_file_path, delete_origin_file)
-                                                ).start()
+                                                # 一般單間停止且沒有啟用自動轉檔時，保留原本的轉檔行為。
+                                                # 自動轉檔及停止全部的轉檔已由 check_subprocess 負責。
+                                                if not converts_to_mp4 and not is_stop_all_requested():
+                                                converts_mp4(
+                                                save_file_path,
+                                                is_original_delete=delete_origin_file
+                                                )
                                                 return
 
                                         except subprocess.CalledProcessError as e:
@@ -1755,9 +1822,15 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                 # 这里是正常循环
                 while x:
+                    if is_stop_all_requested():
+                        logger.info("收到整體停止要求，中斷直播監測倒數")
+                        return
+
                     x = x - 1
+
                     if loop_time:
                         print(f'\r{anchor_name}循环等待{x}秒 ', end="")
+
                     time.sleep(1)
                 if loop_time:
                     print('\r检测直播间中...', end="")
@@ -1766,7 +1839,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             with max_request_lock:
                 error_count += 1
                 error_window.append(1)
-            time.sleep(2)
+        for _ in range(2):
+            if is_stop_all_requested():
+                return
+            time.sleep(1)
 
 
 def backup_file(file_path: str, backup_dir_path: str, limit_counts: int = 6) -> None:
