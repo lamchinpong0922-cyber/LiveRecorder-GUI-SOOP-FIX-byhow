@@ -698,38 +698,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                 try:
                     port_info = []
-            record_finished = False
-            run_once = False
-            start_pushed = False
-            new_record_url = ''
-            count_time = time.time()
-            retry = 0
-            record_quality_zh, record_url, anchor_name = url_data
-            record_quality = get_quality_code(record_quality_zh)
-            proxy_address = proxy_addr
-            platform = '未知平台'
-            live_domain = '/'.join(record_url.split('/')[0:3])
 
-            if proxy_addr:
-                proxy_address = None
-                for platform in enable_proxy_platform_list:
-                    if platform and platform.strip() in record_url:
-                        proxy_address = proxy_addr
-                        break
-
-            if not proxy_address:
-                if extra_enable_proxy_platform_list:
-                    for pt in extra_enable_proxy_platform_list:
-                        if pt and pt.strip() in record_url:
-                            proxy_address = proxy_addr_bak or None
-
-            # print(f'\r代理地址:{proxy_address}')
-            # print(f'\r全局代理:{global_proxy}')
-            while True:
-                if is_stop_all_requested():
-                    return
-                try:
-                    port_info = []
                     if record_url.find("douyin.com/") > -1:
                         platform = '抖音直播'
                         with semaphore:
