@@ -22,7 +22,7 @@ from pathlib import Path
 
 from opencc import OpenCC
 from app_runtime import APP_ROOT, BUNDLE_ROOT, CONFIG_ROOT, CORE, DOWNLOAD_ROOT, core_command
-
+from webui.shutdown_scheduler import ShutdownScheduler
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
@@ -375,6 +375,12 @@ class Recorder:
 
 
 RECORDER = Recorder()
+SHUTDOWN_SCHEDULER = ShutdownScheduler(
+    state_file=APP_ROOT / ".shutdown_schedule.json",
+    stop_recorder=RECORDER.stop,
+    get_process=lambda: RECORDER.process,
+    stop_sentinel=CORE / "STOP_ALL_REQUESTED",
+)
 PREVIEW_CACHE: dict[str, tuple[bytes, str, float]] = {}
 PREVIEW_CACHE_LOCK = threading.Lock()
 RECORDING_PREVIEW_CACHE: dict[str, tuple[bytes, float, float]] = {}
@@ -520,6 +526,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({
                 "rooms": parse_rooms(), "running": RECORDER.running,
                 "startedAt": RECORDER.started_at,
+                "shutdown": SHUTDOWN_SCHEDULER.get_state(),
                 "settings": {
                     "output": get_ini("录制设置", "直播保存路径(不填则默认)"),
                     "format": get_ini("录制设置", "视频保存格式ts|mkv|flv|mp4|mp3音频|m4a音频", "ts"),
@@ -595,7 +602,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             payload = self.read_json()
-            if self.path == "/api/ui-language":
+            if self.path == "/api/shutdown/schedule":
+                result = SHUTDOWN_SCHEDULER.set_schedule(
+                    str(payload.get("mode", "once")),
+                    str(payload.get("time", "")),
+                )
+                self.send_json({"ok": True, "shutdown": result})
+
+elif self.path == "/api/shutdown/cancel":
+    result = SHUTDOWN_SCHEDULER.cancel()
+    self.send_json({"ok": True, "shutdown": result})
+
+elif self.path == "/api/ui-language":
                 language = payload.get("language")
                 if language not in ("zh-TW", "en"):
                     raise ValueError("不支援的介面語言")

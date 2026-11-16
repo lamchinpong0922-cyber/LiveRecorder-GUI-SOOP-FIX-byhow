@@ -24,6 +24,17 @@ export default function RecorderApp() {
   const [autoScroll, setAutoScroll] = useState(true)
   const [notice, setNotice] = useState("")
   const [stopPending, setStopPending] = useState(false)
+  const [shutdownMode, setShutdownMode] = useState<"once" | "daily">("once")
+  const [shutdownTime, setShutdownTime] = useState("03:00")
+  const [shutdownState, setShutdownState] = useState<{
+  enabled: boolean
+  mode: string
+  time: string
+  nextRun: string | null
+  phase: string
+  remaining: number
+  message: string
+} | null>(null)
   const [roomOpen, setRoomOpen] = useState(false)
   const [editing, setEditing] = useState<number | null>(null)
   const [roomDraft, setRoomDraft] = useState<RoomDraft>(emptyRoom)
@@ -69,6 +80,11 @@ export default function RecorderApp() {
     async function refreshState() {
       try {
         const data = await api<Snapshot>("/api/state")
+		setShutdownState(
+			(data as Snapshot & {
+				shutdown?: NonNullable<typeof shutdownState>
+		    	}).shutdown ?? null
+			)
         if (active) {
           setState(data)
           setSelected((current) => Math.max(0, Math.min(current, data.rooms.length - 1)))
@@ -177,7 +193,43 @@ export default function RecorderApp() {
     try { await api("/api/open-downloads", {}) }
     catch (error) { announce((error as Error).message) }
   }
-    async function stopAllRecordings() {
+    async function stopAllRecordings() 
+	async function saveShutdownSchedule() {
+  try {
+    const result = await api<{ shutdown: NonNullable<typeof shutdownState> }>(
+      "/api/shutdown/schedule",
+      {
+        mode: shutdownMode,
+        time: shutdownTime,
+      }
+    )
+
+    setShutdownState(result.shutdown)
+    announce(language === "en" ? "Shutdown schedule saved" : "定時關機已設定")
+  } catch (error) {
+    announce((error as Error).message)
+  }
+}
+
+async function cancelShutdownSchedule() {
+  try {
+    const result = await api<{ shutdown: NonNullable<typeof shutdownState> }>(
+      "/api/shutdown/cancel",
+      {}
+    )
+
+    setShutdownState(result.shutdown)
+    announce(language === "en" ? "Shutdown cancelled" : "定時關機已取消")
+  } catch (error) {
+    announce((error as Error).message)
+  }
+}
+	  } catch (error) {
+    announce((error as Error).message)
+  }
+}
+
+async function cancelShutdownSchedule() {
     if (!state?.running || stopPending) return
 
     try {
@@ -223,6 +275,76 @@ export default function RecorderApp() {
       <dl className="detail-fields"><div className="detail-field"><dt>{t("roomUrl")}</dt><dd>{selectedRoom ? <a href={selectedRoom.url} target="_blank" rel="noreferrer" className="room-url">{selectedRoom.url}<ExternalLink className="size-3.5" /></a> : <span className="field-empty">—</span>}</dd></div>
         <div className="detail-field"><dt>{t("targetQuality")}</dt><dd>{selectedRoom?.quality ?? "—"}</dd></div>
         <div className="detail-field"><dt>{t("storageFormat")}</dt><dd>{state?.settings.format === "mp3音頻" ? t("mp3Audio") : state?.settings.format === "m4a音頻" ? t("m4aAudio") : state?.settings.format ?? "—"}</dd></div></dl>
+		<section className="shutdown-panel">
+  <h2>{t("shutdownTitle")}</h2>
+
+  <div className="shutdown-controls">
+    <select
+      className="native-select"
+      value={shutdownMode}
+      onChange={(event) =>
+        setShutdownMode(event.target.value as "once" | "daily")
+      }
+      disabled={shutdownState?.phase === "stopping" ||
+        shutdownState?.phase === "countdown" ||
+        shutdownState?.phase === "shutdown_retry"}
+    >
+      <option value="once">{t("shutdownOnce")}</option>
+      <option value="daily">{t("shutdownDaily")}</option>
+    </select>
+
+    <input
+      className="native-select"
+      type="time"
+      value={shutdownTime}
+      onChange={(event) => setShutdownTime(event.target.value)}
+      disabled={shutdownState?.phase === "stopping" ||
+        shutdownState?.phase === "countdown" ||
+        shutdownState?.phase === "shutdown_retry"}
+    />
+
+    <Button
+      onClick={saveShutdownSchedule}
+      disabled={
+        shutdownState?.phase === "stopping" ||
+        shutdownState?.phase === "countdown" ||
+        shutdownState?.phase === "shutdown_retry"
+      }
+    >
+      {t("shutdownSave")}
+    </Button>
+
+    <Button
+      variant="destructive"
+      onClick={cancelShutdownSchedule}
+      disabled={
+        !shutdownState?.enabled &&
+        shutdownState?.phase !== "stopping" &&
+        shutdownState?.phase !== "countdown" &&
+        shutdownState?.phase !== "shutdown_retry"
+      }
+    >
+      {t("shutdownCancel")}
+    </Button>
+  </div>
+
+  <div className="shutdown-status">
+    {shutdownState?.message || t("shutdownInactive")}
+  </div>
+
+  {shutdownState?.nextRun && (
+    <div className="shutdown-status">
+      {t("shutdownNextRun")}: {shutdownState.nextRun.replace("T", " ")}
+    </div>
+  )}
+
+  {shutdownState?.phase === "countdown" && (
+    <div className="shutdown-status">
+      {t("shutdownCountdown")}: {Math.floor(shutdownState.remaining / 60)}:
+      {String(shutdownState.remaining % 60).padStart(2, "0")}
+    </div>
+  )}
+</section>
       <div className="detail-note"><CircleHelp className="size-4" /><span>{t("detailNote")}</span></div>
       <div className="detail-actions"><Button disabled={!selectedRoom} variant={selectedRoom?.enabled ? "outline" : "default"} onClick={() => selectedRoom && controlRoom(selected, !selectedRoom.enabled)}>{selectedRoom?.enabled ? <Square /> : <Play />}{t(selectedRoom?.enabled ? "stopThisRoom" : "startThisRoom")}</Button><Button disabled={!selectedRoom} variant="outline" onClick={() => openRoom(selected)}><Pencil />{t("edit")}</Button><Button disabled={!selectedRoom} variant="outline" className="delete-button" onClick={() => setDeleteOpen(true)}><Trash2 />{t("delete")}</Button></div>
     </main>
