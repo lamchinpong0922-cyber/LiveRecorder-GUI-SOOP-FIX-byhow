@@ -317,17 +317,14 @@ class ShutdownScheduler:
             if not stop_ok:
                 process = self.get_process()
 
-                # 如果核心仍在執行，代表停止要求未成功送達。
-                # 此時禁止繼續倒數關機。
+                # 核心仍在執行，但停止要求失敗。
+                # 不允許繼續倒數關機。
                 if process is not None and process.poll() is None:
                     self._update(
                         phase="error",
                         message=f"停止錄製失敗，取消本次關機：{stop_message}",
                     )
                     return
-
-                # 核心已經結束或原本就沒有執行錄製，
-                # 可以安全地繼續關機流程。
 
         except Exception as exc:
             self._update(
@@ -345,9 +342,24 @@ class ShutdownScheduler:
                 if event.wait(1):
                     return
 
+            # 核心已退出，但必須確認退出碼正常。
+            exit_code = process.returncode
+
+            if exit_code != 0:
+                self._update(
+                    phase="error",
+                    remaining=0,
+                    message=(
+                        f"錄製核心異常退出（代碼 {exit_code}），"
+                        "已取消本次自動關機"
+                    ),
+                )
+                return
+
         if event.is_set():
             return
 
+        # 只有核心正常完成，才開始 5 分鐘關機倒數。
         self._update(
             phase="countdown",
             remaining=300,
