@@ -500,6 +500,7 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
 
 
 
+
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
                      script_command: str | None = None) -> bool:
     save_file_path = ffmpeg_command[-1]
@@ -566,7 +567,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         logger.error(f"等待 FFmpeg 結束失敗: {e}")
         return_code = process.returncode
 
-    # 再檢查一次，避免停止訊號剛好在 FFmpeg 結束時送達而漏掉
+    # 再檢查一次停止訊號，避免停止訊號剛好在 FFmpeg 結束時送達而漏掉
     stop_all_requested = (
         stop_all_requested or is_stop_all_requested()
     )
@@ -576,9 +577,82 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
 
-    if return_code == 0:
+    conversion_failed = False
+    conversion_attempted = False
 
-        if save_type == 'TS' and (converts_to_mp4 or stop_all_requested):
+    # 停止全部時，不論 FFmpeg 回傳碼是否為 0，
+    # 都嘗試處理已經完成寫入的 TS。
+    if save_type == 'TS' and (converts_to_mp4 or stop_all_requested):
+
+        if stop_all_requested:
+            try:
+                if split_video_by_time:
+                    file_paths = utils.get_file_paths(
+                        os.path.dirname(save_file_path)
+                    )
+
+                    prefix = os.path.basename(save_file_path).rsplit(
+                        '_', maxsplit=1
+                    )[0]
+
+                    ts_files = [
+                        path for path in file_paths
+                        if prefix in path and path.lower().endswith('.ts')
+                    ]
+
+                    if not ts_files:
+                        conversion_failed = True
+                        logger.error(
+                            f"[{record_name}]停止全部時找不到可轉檔的 TS：{save_file_path}"
+                        )
+
+                    for path in ts_files:
+                        conversion_attempted = True
+
+                        try:
+                            # 強制串流複製，不重新編碼，保留 TS
+                            converted = converts_mp4(
+                                path,
+                                is_original_delete=False,
+                                force_copy=True
+                            )
+
+                            if not converted:
+                                conversion_failed = True
+                                logger.error(
+                                    f"[{record_name}]MP4 轉檔失敗：{path}"
+                                )
+
+                        except Exception as e:
+                            conversion_failed = True
+                            logger.error(
+                                f"[{record_name}]MP4 轉檔發生錯誤：{path}，{e}"
+                            )
+
+                else:
+                    conversion_attempted = True
+
+                    # 強制串流複製，不重新編碼，保留 TS
+                    converted = converts_mp4(
+                        save_file_path,
+                        is_original_delete=False,
+                        force_copy=True
+                    )
+
+                    if not converted:
+                        conversion_failed = True
+                        logger.error(
+                            f"[{record_name}]MP4 轉檔失敗：{save_file_path}"
+                        )
+
+            except Exception as e:
+                conversion_failed = True
+                logger.error(
+                    f"[{record_name}]停止全部時啟動 MP4 轉檔失敗：{e}"
+                )
+
+        elif return_code == 0:
+            # 一般錄影完成後的自動轉檔，維持原本行為
             try:
                 if split_video_by_time:
                     file_paths = utils.get_file_paths(
@@ -595,73 +669,75 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                     ]
 
                     for path in ts_files:
-                        if stop_all_requested:
-                            # 停止全部：同步轉檔，強制不重新編碼，保留 TS
-                            converts_mp4(
-                                path,
-                                is_original_delete=False,
-                                force_copy=True
-                            )
-                        else:
-                            # 一般自動轉檔：保留原本非同步行為
-                            convert_thread = threading.Thread(
-                                target=converts_mp4,
-                                args=(path, delete_origin_file)
-                            )
-                            convert_thread.start()
-
-                else:
-                    if stop_all_requested:
-                        # 停止全部：同步轉檔，完成後才允許核心退出
-                        converts_mp4(
-                            save_file_path,
-                            is_original_delete=False,
-                            force_copy=True
-                        )
-                    else:
                         convert_thread = threading.Thread(
                             target=converts_mp4,
-                            args=(save_file_path, delete_origin_file)
+                            args=(path, delete_origin_file)
                         )
                         convert_thread.start()
+
+                else:
+                    convert_thread = threading.Thread(
+                        target=converts_mp4,
+                        args=(save_file_path, delete_origin_file)
+                    )
+                    convert_thread.start()
 
             except Exception as e:
                 logger.error(f"TS 轉 MP4 啟動失敗：{e}")
 
+    # 記錄錄影及轉檔結果
+    if return_code == 0:
         print(f"\n{record_name} {stop_time} 直播錄製完成\n")
-
-        if script_command:
-            logger.debug("開始執行腳本命令!")
-
-            if "python" in script_command:
-                params = [
-                    f'--record_name "{record_name}"',
-                    f'--save_file_path "{save_file_path}"',
-                    f'--save_type {save_type}',
-                    f'--split_video_by_time {split_video_by_time}',
-                    f'--converts_to_mp4 {converts_to_mp4}',
-                ]
-            else:
-                params = [
-                    f'"{record_name.split(" ", maxsplit=1)[-1]}"',
-                    f'"{save_file_path}"',
-                    save_type,
-                    f'split_video_by_time:{split_video_by_time}',
-                    f'converts_to_mp4:{converts_to_mp4}'
-                ]
-
-            script_command = (
-                script_command.strip() + ' ' + ' '.join(params)
-            )
-
-            run_script(script_command)
-            logger.debug("腳本命令執行結束!")
 
     else:
         color_obj.print_colored(
-            f"\n{record_name} {stop_time} 直播錄製出錯，返回碼: {return_code}\n",
+            f"\n{record_name} {stop_time} FFmpeg 結束代碼：{return_code}\n",
             color_obj.RED
         )
+
+        if stop_all_requested:
+            logger.warning(
+                f"[{record_name}]停止全部時 FFmpeg 回傳非 0，仍已嘗試處理 TS"
+            )
+
+    if stop_all_requested and save_type == 'TS':
+        if conversion_failed:
+            logger.error(
+                f"[{record_name}]停止全部完成，但 MP4 轉檔有失敗項目"
+            )
+        elif conversion_attempted:
+            logger.info(
+                f"[{record_name}]停止全部時 MP4 轉檔工作已成功完成"
+            )
+
+    # 自訂腳本維持原本條件：
+    # 只有 FFmpeg 正常結束才執行，避免異常停止時誤觸發。
+    if return_code == 0 and script_command:
+        logger.debug("開始執行腳本命令!")
+
+        if "python" in script_command:
+            params = [
+                f'--record_name "{record_name}"',
+                f'--save_file_path "{save_file_path}"',
+                f'--save_type {save_type}',
+                f'--split_video_by_time {split_video_by_time}',
+                f'--converts_to_mp4 {converts_to_mp4}',
+            ]
+        else:
+            params = [
+                f'"{record_name.split(" ", maxsplit=1)[-1]}"',
+                f'"{save_file_path}"',
+                save_type,
+                f'split_video_by_time:{split_video_by_time}',
+                f'converts_to_mp4:{converts_to_mp4}'
+            ]
+
+        script_command = (
+            script_command.strip() + ' ' + ' '.join(params)
+        )
+
+        run_script(script_command)
+        logger.debug("腳本命令執行結束!")
 
     recording.discard(record_name)
 
@@ -669,6 +745,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         return True
 
     return False
+
 
 
 
@@ -1780,10 +1857,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 # 一般單間停止且沒有啟用自動轉檔時，保留原本的轉檔行為。
                                                 # 自動轉檔及停止全部的轉檔已由 check_subprocess 負責。
                                                 if not converts_to_mp4 and not is_stop_all_requested():
-                                                converts_mp4(
-                                                save_file_path,
-                                                is_original_delete=delete_origin_file
-                                                )
+                                                    converts_mp4(
+                                                        save_file_path,
+                                                        is_original_delete=delete_origin_file
+                                                    )
                                                 return
 
                                         except subprocess.CalledProcessError as e:

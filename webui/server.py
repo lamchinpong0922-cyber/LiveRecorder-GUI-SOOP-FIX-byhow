@@ -814,20 +814,13 @@ def create_server(port: int, *, auto_start: bool = True) -> ThreadingHTTPServer:
 
 
 def close_server(server: ThreadingHTTPServer) -> None:
-    # 程式真正結束時，先取消尚未執行的定時關機。
-    # 不讓排程執行緒在程式結束後繼續工作。
+    # 真正結束程式時，先停止定時關機排程。
+    # 避免排程執行緒在 GUI 退出後繼續執行關機指令。
     SHUTDOWN_SCHEDULER.stop()
 
-    # 然後由 Recorder 統一處理核心停止及程序清理。
+    # 停止 HTTP 服務，再等待核心完成錄製收尾及 MP4 轉檔。
     server.server_close()
     RECORDER.close()
-
-
-def close_server(server: ThreadingHTTPServer) -> None:
-    # 先停止 HTTP 服務，再由 Recorder 統一負責核心收尾。
-    server.server_close()
-    RECORDER.close()
-
 
 def main() -> None:
     from tray_runtime import TrayController
