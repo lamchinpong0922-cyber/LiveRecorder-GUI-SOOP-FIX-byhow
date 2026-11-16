@@ -312,12 +312,27 @@ class ShutdownScheduler:
 
         try:
             # 正常通知核心停止，不強制終止 FFmpeg。
-            self.stop_recorder()
+            stop_ok, stop_message = self.stop_recorder()
+
+            if not stop_ok:
+                process = self.get_process()
+
+                # 如果核心仍在執行，代表停止要求未成功送達。
+                # 此時禁止繼續倒數關機。
+                if process is not None and process.poll() is None:
+                    self._update(
+                        phase="error",
+                        message=f"停止錄製失敗，取消本次關機：{stop_message}",
+                    )
+                    return
+
+                # 核心已經結束或原本就沒有執行錄製，
+                # 可以安全地繼續關機流程。
 
         except Exception as exc:
             self._update(
                 phase="error",
-                message=f"停止錄製失敗：{exc}",
+                message=f"停止錄製失敗，取消本次關機：{exc}",
             )
             return
 
