@@ -27,6 +27,7 @@ from urllib.error import URLError, HTTPError
 from typing import Any
 import configparser
 import httpx
+import queue
 from src import spider, stream
 from src.ffmpeg_options import (
     recording_corrupt_packet_options,
@@ -68,6 +69,33 @@ STOP_SENTINEL_PATH = os.path.join(
 
 def is_stop_all_requested() -> bool:
     return os.path.isfile(STOP_SENTINEL_PATH)
+    def input_or_stop(prompt: str) -> str | None:
+    """
+    等待使用者輸入，但收到整體停止訊號時立即返回。
+    輸入工作放在 daemon thread，避免 input() 阻止核心退出。
+    """
+    result_queue = queue.Queue(maxsize=1)
+
+    def read_input() -> None:
+        try:
+            result_queue.put(input(prompt))
+        except (EOFError, OSError):
+            result_queue.put(None)
+
+    input_thread = threading.Thread(
+        target=read_input,
+        name="LiveRecorderConsoleInput",
+        daemon=True,
+    )
+    input_thread.start()
+
+    while not is_stop_all_requested():
+        try:
+            return result_queue.get(timeout=0.25)
+        except queue.Empty:
+            continue
+
+    return None
 need_update_line_list = []
 first_run = True
 not_record_list = []
@@ -2098,7 +2126,14 @@ while True:
                 ini_URL_content = file.read().strip()
 
         if not ini_URL_content.strip():
-            input_url = input('请输入要录制的主播直播间网址（尽量使用PC网页端的直播间地址）:\n')
+            input_url = input_or_stop(
+                '请输入要录制的主播直播间网址（尽量使用PC网页端的直播间地址）:\n'
+            )
+
+            if input_url is None:
+                logger.info("收到停止訊號或輸入結束，停止核心主迴圈")
+                break
+
             with open(url_config_file, 'w', encoding=text_encoding) as file:
                 file.write(input_url)
     except OSError as err:
