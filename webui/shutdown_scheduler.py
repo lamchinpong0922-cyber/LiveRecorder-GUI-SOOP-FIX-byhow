@@ -375,19 +375,25 @@ class ShutdownScheduler:
             message="正在執行 Windows 關機",
         )
 
-        while not event.is_set():
+        while True:
             try:
-                result = self._hidden_run([
-                    "shutdown.exe",
-                    "/s",
-                    "/t",
-                    "0",
-                ])
+                # 將「檢查取消訊號」及「送出關機指令」
+                # 放在同一把鎖內，避免取消與關機指令互相錯過。
+                with self.lock:
+                    if event.is_set():
+                        return
 
-                if result.returncode == 0:
-                    with self.lock:
+                    result = self._hidden_run([
+                        "shutdown.exe",
+                        "/s",
+                        "/t",
+                        "0",
+                    ])
+
+                    if result.returncode == 0:
                         self.shutdown_requested = True
 
+                if result.returncode == 0:
                     self._update(
                         message="已送出關機指令，若未關機將於 120 秒後重試",
                     )
