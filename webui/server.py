@@ -602,6 +602,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             payload = self.read_json()
+
             if self.path == "/api/shutdown/schedule":
                 result = SHUTDOWN_SCHEDULER.set_schedule(
                     str(payload.get("mode", "once")),
@@ -609,80 +610,192 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send_json({"ok": True, "shutdown": result})
 
-elif self.path == "/api/shutdown/cancel":
-    result = SHUTDOWN_SCHEDULER.cancel()
-    self.send_json({"ok": True, "shutdown": result})
+            elif self.path == "/api/shutdown/cancel":
+                result = SHUTDOWN_SCHEDULER.cancel()
+                self.send_json({"ok": True, "shutdown": result})
 
-elif self.path == "/api/ui-language":
+            elif self.path == "/api/ui-language":
                 language = payload.get("language")
+
                 if language not in ("zh-TW", "en"):
                     raise ValueError("不支援的介面語言")
+
                 with UI_LANGUAGE_LOCK:
                     temporary = UI_LANGUAGE_FILE.with_suffix(".tmp")
-                    temporary.write_text(json.dumps({"language": language}), encoding="utf-8")
+                    temporary.write_text(
+                        json.dumps({"language": language}),
+                        encoding="utf-8",
+                    )
                     temporary.replace(UI_LANGUAGE_FILE)
+
                 self.send_json({"language": language})
+
             elif self.path == "/api/recorder/start":
                 ok, message = RECORDER.start()
-                self.send_json({"ok": ok, "message": message}, 200 if ok else 409)
+                self.send_json(
+                    {"ok": ok, "message": message},
+                    200 if ok else 409,
+                )
+
             elif self.path == "/api/recorder/stop":
                 ok, message = RECORDER.stop()
-                self.send_json({"ok": ok, "message": message}, 200 if ok else 409)
+                self.send_json(
+                    {"ok": ok, "message": message},
+                    200 if ok else 409,
+                )
+
             elif self.path == "/api/rooms/save":
                 save_rooms(payload.get("rooms", []))
-                self.send_json({"ok": True, "rooms": parse_rooms()})
+                self.send_json({
+                    "ok": True,
+                    "rooms": parse_rooms(),
+                })
+
             elif self.path == "/api/room/control":
                 rooms = parse_rooms()
                 room_index = int(payload.get("index", -1))
+
                 if room_index < 0 or room_index >= len(rooms):
                     raise IndexError("找不到指定的直播間")
+
                 enabled = bool(payload.get("enabled"))
                 rooms[room_index]["enabled"] = enabled
                 save_rooms(rooms)
-                message = "此直播間已開始監看與錄製" if enabled else "此直播間已停止錄製"
+
+                message = (
+                    "此直播間已開始監看與錄製"
+                    if enabled
+                    else "此直播間已停止錄製"
+                )
+
                 if enabled and not RECORDER.running:
                     _, start_message = RECORDER.start()
                     message = f"{message}；{start_message}"
-                elif not enabled and RECORDER.running and not any(room["enabled"] for room in rooms):
+
+                elif (
+                    not enabled
+                    and RECORDER.running
+                    and not any(room["enabled"] for room in rooms)
+                ):
                     _, stop_message = RECORDER.stop()
                     message = f"{message}；{stop_message}"
-                RECORDER.append(f"[{rooms[room_index]['name'] or rooms[room_index]['url']}] {message}", "success")
-                self.send_json({"ok": True, "message": message, "rooms": parse_rooms(), "running": RECORDER.running})
+
+                RECORDER.append(
+                    f"[{rooms[room_index]['name'] or rooms[room_index]['url']}] {message}",
+                    "success",
+                )
+
+                self.send_json({
+                    "ok": True,
+                    "message": message,
+                    "rooms": parse_rooms(),
+                    "running": RECORDER.running,
+                })
+
             elif self.path == "/api/settings":
                 interval = max(10, int(payload.get("interval", 300)))
-                set_ini("录制设置", "直播保存路径(不填则默认)", str(payload.get("output", "")).strip())
-                set_ini("录制设置", "视频保存格式ts|mkv|flv|mp4|mp3音频|m4a音频", str(payload.get("format", "ts")))
-                set_ini("录制设置", "循环时间(秒)", str(interval))
-                set_ini("录制设置", "偏好帧率(自动|30|60)", str(payload.get("fps", "自動")).replace("自動", "自动"))
-                set_ini("录制设置", "是否使用代理ip(是/否)", "是" if payload.get("proxyEnabled") else "否")
-                set_ini("录制设置", "代理地址", str(payload.get("proxy", "")).strip())
-                set_ini("账号密码", "sooplive账号", str(payload.get("soopUsername", "")).strip())
+
+                set_ini(
+                    "录制设置",
+                    "直播保存路径(不填则默认)",
+                    str(payload.get("output", "")).strip(),
+                )
+
+                set_ini(
+                    "录制设置",
+                    "视频保存格式ts|mkv|flv|mp4|mp3音频|m4a音频",
+                    str(payload.get("format", "ts")),
+                )
+
+                set_ini(
+                    "录制设置",
+                    "循环时间(秒)",
+                    str(interval),
+                )
+
+                set_ini(
+                    "录制设置",
+                    "偏好帧率(自动|30|60)",
+                    str(payload.get("fps", "自動")).replace("自動", "自动"),
+                )
+
+                set_ini(
+                    "录制设置",
+                    "是否使用代理ip(是/否)",
+                    "是" if payload.get("proxyEnabled") else "否",
+                )
+
+                set_ini(
+                    "录制设置",
+                    "代理地址",
+                    str(payload.get("proxy", "")).strip(),
+                )
+
+                set_ini(
+                    "账号密码",
+                    "sooplive账号",
+                    str(payload.get("soopUsername", "")).strip(),
+                )
+
                 if payload.get("soopPassword"):
-                    set_ini("账号密码", "sooplive密码", str(payload["soopPassword"]))
+                    set_ini(
+                        "账号密码",
+                        "sooplive密码",
+                        str(payload["soopPassword"]),
+                    )
+
                 if payload.get("soopCookie"):
-                    set_ini("Cookie", "sooplive_cookie", str(payload["soopCookie"]).strip())
+                    set_ini(
+                        "Cookie",
+                        "sooplive_cookie",
+                        str(payload["soopCookie"]).strip(),
+                    )
+
                 self.send_json({"ok": True})
+
             elif self.path == "/api/open-downloads":
-                configured = get_ini("录制设置", "直播保存路径(不填则默认)").strip()
-                target = Path(configured).expanduser() if configured else DOWNLOAD_ROOT
+                configured = get_ini(
+                    "录制设置",
+                    "直播保存路径(不填则默认)",
+                ).strip()
+
+                target = (
+                    Path(configured).expanduser()
+                    if configured
+                    else DOWNLOAD_ROOT
+                )
+
                 if not target.is_absolute():
                     target = CORE / target
+
                 target.mkdir(parents=True, exist_ok=True)
+
                 if os.name == "nt":
                     os.startfile(target)
                 else:
                     subprocess.Popen(["xdg-open", str(target)])
+
                 self.send_json({"ok": True})
+
             else:
                 self.send_json({"error": "找不到 API"}, 404)
+
         except Exception as exc:
-            self.send_json({"error": TO_TRADITIONAL.convert(str(exc))}, 400)
+            self.send_json(
+                {"error": TO_TRADITIONAL.convert(str(exc))},
+                400,
+            )
 
 
 def start_enabled_rooms(source: str = "Web UI") -> None:
-    enabled_rooms = [room for room in parse_rooms() if room["enabled"]]
+    enabled_rooms = [
+        room for room in parse_rooms()
+        if room["enabled"]
+    ]
+
     if enabled_rooms and os.environ.get("LIVE_RECORDER_UI_PREVIEW") != "1":
         ok, message = RECORDER.start()
+
         RECORDER.append(
             f"{source} 啟動時偵測到 {len(enabled_rooms)} 個已啟用直播：{message}",
             "success" if ok else "error",
@@ -693,9 +806,21 @@ def create_server(port: int, *, auto_start: bool = True) -> ThreadingHTTPServer:
     ensure_configs()
     host = "127.0.0.1"
     server = LocalHTTPServer((host, port), Handler)
+
     if auto_start:
         start_enabled_rooms()
+
     return server
+
+
+def close_server(server: ThreadingHTTPServer) -> None:
+    # 程式真正結束時，先取消尚未執行的定時關機。
+    # 不讓排程執行緒在程式結束後繼續工作。
+    SHUTDOWN_SCHEDULER.stop()
+
+    # 然後由 Recorder 統一處理核心停止及程序清理。
+    server.server_close()
+    RECORDER.close()
 
 
 def close_server(server: ThreadingHTTPServer) -> None:
