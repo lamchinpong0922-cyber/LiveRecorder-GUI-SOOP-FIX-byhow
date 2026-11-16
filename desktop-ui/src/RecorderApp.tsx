@@ -1025,11 +1025,13 @@ export default function RecorderApp() {
               onClick={stopAllRecordings}
             >
               <Square />
-              {t(
-                stopPending
-                  ? "stopAllPending"
-                  : "stopAll"
-              )}
+              {stopPending
+                ? language === "en"
+                  ? "Stopping and converting..."
+                  : "正在停止錄製並轉換 MP4..."
+                : language === "en"
+                  ? "Stop all and convert to MP4"
+                  : "停止全部並轉 MP4"}
             </Button>
 
             <Button
