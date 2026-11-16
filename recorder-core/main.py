@@ -69,7 +69,9 @@ STOP_SENTINEL_PATH = os.path.join(
 
 def is_stop_all_requested() -> bool:
     return os.path.isfile(STOP_SENTINEL_PATH)
-    def input_or_stop(prompt: str) -> str | None:
+
+
+def input_or_stop(prompt: str) -> str | None:
     """
     等待使用者輸入，但收到整體停止訊號時立即返回。
     輸入工作放在 daemon thread，避免 input() 阻止核心退出。

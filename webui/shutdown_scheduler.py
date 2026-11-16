@@ -231,6 +231,7 @@ class ShutdownScheduler:
         while not event.is_set():
             with self.lock:
                 enabled = self.state.get("enabled")
+                mode = self.state.get("mode")
                 next_run_text = self.state.get("nextRun")
 
             if not enabled or not next_run_text:
@@ -254,8 +255,28 @@ class ShutdownScheduler:
                 )
                 continue
 
-            self._trigger(event)
-            return
+            try:
+                self._trigger(event)
+            except Exception as exc:
+                self._update(
+                    phase="error",
+                    message=f"排程執行發生錯誤：{exc}",
+                )
+
+            if event.is_set():
+                return
+
+            with self.lock:
+                enabled = self.state.get("enabled")
+                mode = self.state.get("mode")
+
+            # 單次排程觸發後結束。
+            if not enabled or mode != "daily":
+                return
+
+            # 每天模式若當天停止流程發生錯誤，
+            # 保留排程，繼續等待下一個指定時間。
+
 
     def _trigger(self, event: threading.Event) -> None:
         with self.lock:
