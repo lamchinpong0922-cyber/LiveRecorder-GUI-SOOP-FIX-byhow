@@ -346,16 +346,31 @@ class Recorder:
             self.stop()
 
         # 等待核心結束。
-        # 核心的非 daemon 錄製工作及轉檔工作完成後才會退出。
+        # 核心必須完成 FFmpeg 收尾、TS 寫入及 MP4 轉檔。
         if self.process is not None:
             try:
                 self.process.wait()
             except Exception as exc:
-                self.append(f"等待錄製核心結束時發生錯誤：{exc}", "error")
+                self.append(
+                    f"等待錄製核心結束時發生錯誤：{exc}",
+                    "error"
+                )
 
-        # 核心及其 FFmpeg 子程序已退出後，才關閉 Job Object。
+            # 核心退出後再等待 10 秒。
+            # 若 Job Object 內仍有本專案殘留的 FFmpeg，
+            # 最後關閉 Job 時才會清理它們。
+            if os.name == "nt" and self.windows_job:
+                self.append(
+                    "錄製核心已退出，等待 10 秒後清理本專案殘留程序…"
+                )
+                time.sleep(10)
+
+        # Job Object 只包含本專案核心及其子程序，
+        # 不會使用全域名稱方式終止其他軟體的 FFmpeg。
         close_job(self.windows_job)
         self.windows_job = None
+
+        self.append("本專案程序清理完成", "success")
 
 
 
@@ -666,8 +681,7 @@ def create_server(port: int, *, auto_start: bool = True) -> ThreadingHTTPServer:
 
 
 def close_server(server: ThreadingHTTPServer) -> None:
-    if RECORDER.running:
-        RECORDER.stop()
+    # 先停止 HTTP 服務，再由 Recorder 統一負責核心收尾。
     server.server_close()
     RECORDER.close()
 

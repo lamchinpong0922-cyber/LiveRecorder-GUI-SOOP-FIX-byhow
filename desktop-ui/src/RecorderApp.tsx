@@ -23,6 +23,7 @@ export default function RecorderApp() {
   const [logFilter, setLogFilter] = useState<"all" | "error" | "success">("all")
   const [autoScroll, setAutoScroll] = useState(true)
   const [notice, setNotice] = useState("")
+  const [stopPending, setStopPending] = useState(false)
   const [roomOpen, setRoomOpen] = useState(false)
   const [editing, setEditing] = useState<number | null>(null)
   const [roomDraft, setRoomDraft] = useState<RoomDraft>(emptyRoom)
@@ -71,6 +72,10 @@ export default function RecorderApp() {
         if (active) {
           setState(data)
           setSelected((current) => Math.max(0, Math.min(current, data.rooms.length - 1)))
+
+          if (!data.running) {
+            setStopPending(false)
+          }
         }
       } catch { /* Retry on the next poll. */ }
       if (active) timer = window.setTimeout(refreshState, 2500)
@@ -172,6 +177,23 @@ export default function RecorderApp() {
     try { await api("/api/open-downloads", {}) }
     catch (error) { announce((error as Error).message) }
   }
+    async function stopAllRecordings() {
+    if (!state?.running || stopPending) return
+
+    try {
+      setStopPending(true)
+
+      const result = await api<{ ok: boolean; message: string }>(
+        "/api/recorder/stop",
+        {}
+      )
+
+      announce(result.message)
+    } catch (error) {
+      setStopPending(false)
+      announce((error as Error).message)
+    }
+  }
 
   return <div className="app-shell">
     <aside className="room-sidebar">
@@ -205,7 +227,7 @@ export default function RecorderApp() {
       <div className="detail-actions"><Button disabled={!selectedRoom} variant={selectedRoom?.enabled ? "outline" : "default"} onClick={() => selectedRoom && controlRoom(selected, !selectedRoom.enabled)}>{selectedRoom?.enabled ? <Square /> : <Play />}{t(selectedRoom?.enabled ? "stopThisRoom" : "startThisRoom")}</Button><Button disabled={!selectedRoom} variant="outline" onClick={() => openRoom(selected)}><Pencil />{t("edit")}</Button><Button disabled={!selectedRoom} variant="outline" className="delete-button" onClick={() => setDeleteOpen(true)}><Trash2 />{t("delete")}</Button></div>
     </main>
 
-    <section className="log-panel"><div className="log-header"><h2>{t("logs")}</h2><Button variant="outline" onClick={openDownloads}><FolderOpen />{t("recordingsFolder")}</Button></div>
+    <section className="log-panel"><div className="log-header"><h2>{t("logs")}</h2><div className="flex items-center gap-2"><Button variant="destructive" disabled={!state?.running || stopPending} onClick={stopAllRecordings}><Square />{t(stopPending ? "stopAllPending" : "stopAll")}</Button><Button variant="outline" onClick={openDownloads}><FolderOpen />{t("recordingsFolder")}</Button></div></div>
       <div className="log-summary"><span className={`status-dot ${state?.running ? "is-active" : ""}`} /><span>{t(state?.running ? "coreRunningShort" : "coreStoppedShort")}</span><label className="log-filter-label">{t("show")}<select className="native-select log-filter" value={logFilter} onChange={(event) => setLogFilter(event.target.value as "all" | "error" | "success")}><option value="all">{t("all")}</option><option value="error">{t("errors")}</option><option value="success">{t("successes")}</option></select></label><span className="log-count">{t("logCount", { visible: visibleLogs.length, total: logs.length })}</span></div>
       <div className="log-window">{logs.length === 0 ? <div className="log-empty">{t("noLogs")}</div> : visibleLogs.length === 0 && <div className="log-empty">{t("noFilteredLogs")}</div>}{visibleLogs.map((line) => <div className={`log-line level-${line.level}`} key={line.id}><time>{line.time}</time><span>{line.text}</span></div>)}<div ref={logEnd} /></div>
       <div className="log-footer"><label className="flex items-center gap-2"><Checkbox checked={autoScroll} onCheckedChange={(value) => setAutoScroll(value === true)} />{t("autoScroll")}</label><Button variant="ghost" size="sm" onClick={() => setLogs([])}>{t("clearDisplay")}</Button></div>
