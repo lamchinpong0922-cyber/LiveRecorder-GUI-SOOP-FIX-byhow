@@ -1,4 +1,3 @@
-
 @echo off
 chcp 65001 >nul
 setlocal
@@ -14,16 +13,24 @@ echo.
 REM ===== 選擇 Python 環境 =====
 if exist ".venv\Scripts\python.exe" (
     set "PYTHON=.venv\Scripts\python.exe"
+    set "PYTHONW=.venv\Scripts\pythonw.exe"
 ) else if exist "venv\Scripts\python.exe" (
     set "PYTHON=venv\Scripts\python.exe"
+    set "PYTHONW=venv\Scripts\pythonw.exe"
 ) else (
-    where python >nul 2>&1
+    where python.exe >nul 2>&1
     if errorlevel 1 (
         echo [ERROR] 找不到 Python。
         pause
         exit /b 1
     )
-    set "PYTHON=python"
+
+    for /f "delims=" %%I in ('where python.exe') do (
+        if not defined PYTHON_EXE set "PYTHON_EXE=%%I"
+    )
+
+    set "PYTHON=%PYTHON_EXE%"
+    set "PYTHONW=%PYTHON_EXE:python.exe=pythonw.exe%"
 )
 
 echo [INFO] Python: %PYTHON%
@@ -78,19 +85,27 @@ if not exist "launcher.py" (
     exit /b 1
 )
 
-REM ===== 啟動 React 桌面版 =====
+REM ===== 檢查 Pythonw =====
+if not exist "%PYTHONW%" (
+    echo [ERROR] 找不到 pythonw.exe：
+    echo %PYTHONW%
+    pause
+    exit /b 1
+)
+
+REM ===== 啟動桌面程式 =====
 echo ==========================================
 echo [INFO] 正在啟動 React 桌面版...
 echo ==========================================
-echo.
+echo.start "" "%PYTHONW%" launcher.py --desktop
 
-"%PYTHON%" launcher.py --desktop
+if errorlevel 1 (
+    echo [ERROR] 桌面程式啟動失敗。
+    pause
+    exit /b 1
+)
 
-set "EXIT_CODE=%ERRORLEVEL%"
-
-echo.
-echo ==========================================
-echo 程式結束，代碼：%EXIT_CODE%
-echo ==========================================
-pause
-exit /b %EXIT_CODE%
+echo [INFO] 桌面程式已交由背景程序啟動。
+echo [INFO] CMD 將在 5 秒後關閉。
+timeout /t 5 /nobreak >nul
+exit

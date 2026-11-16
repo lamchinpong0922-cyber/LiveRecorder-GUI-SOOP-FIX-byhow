@@ -3,7 +3,8 @@ import {
   useEffect,
   useRef,
   useState,
-  type FormEvent,
+  type FormEvent,
+
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react"
@@ -84,6 +85,8 @@ export default function RecorderApp() {
 
   const [autoScroll, setAutoScroll] = useState(true)
   const [notice, setNotice] = useState("")
+  const [roomsSyncTime, setRoomsSyncTime] = useState("--:--:--")
+  const [roomsSyncStatus, setRoomsSyncStatus] = useState("waiting")
   const [stopPending, setStopPending] = useState(false)
 
   // 三欄布局寬度：保存使用者上次調整的結果。
@@ -200,6 +203,19 @@ export default function RecorderApp() {
     useState<ShutdownState | null>(null)
 
   const [roomOpen, setRoomOpen] = useState(false)
+
+  useEffect(() => {
+    roomOpenRef.current = roomOpen
+
+    if (!roomOpen && pendingExternalRooms.current) {
+      const latestRooms = pendingExternalRooms.current
+      pendingExternalRooms.current = null
+
+      setState((current) =>
+        current ? { ...current, rooms: latestRooms } : current
+      )
+    }
+  }, [roomOpen])
   const [editing, setEditing] = useState<number | null>(null)
   const [roomDraft, setRoomDraft] =
     useState<RoomDraft>(emptyRoom)
@@ -214,6 +230,10 @@ export default function RecorderApp() {
   const [previewFailed, setPreviewFailed] = useState(false)
 
   const logSince = useRef(0)
+  const roomsRevision = useRef("")
+  const roomOpenRef = useRef(false)
+  const pendingExternalRooms = useRef<Room[] | null>(null)
+  const editingRoomUrl = useRef<string | null>(null)
   const logEnd = useRef<HTMLDivElement>(null)
 
   const shutdownInitialized = useRef(false)
@@ -323,7 +343,37 @@ export default function RecorderApp() {
 
         if (!active) return
 
-        setState(data)
+        const revision =
+          (data as Snapshot & { roomsRevision?: string }).roomsRevision ?? ""
+
+        if (revision && revision !== roomsRevision.current) {
+          const wasInitialized = !!roomsRevision.current
+          roomsRevision.current = revision
+
+          if (wasInitialized) {
+            setRoomsSyncTime(new Date().toLocaleTimeString())
+            setRoomsSyncStatus("synced")
+
+            if (roomOpenRef.current) {
+              pendingExternalRooms.current = data.rooms
+            }
+          } else {
+            setRoomsSyncTime(new Date().toLocaleTimeString())
+            setRoomsSyncStatus("synced")
+          }
+        }
+
+        setState((current) => {
+          if (!current) return data
+
+          return {
+            ...data,
+            rooms:
+              roomOpenRef.current && pendingExternalRooms.current
+                ? current.rooms
+                : data.rooms,
+          }
+        })
         setShutdownState(data.shutdown)
 
         setSelected((current) =>
@@ -342,11 +392,11 @@ export default function RecorderApp() {
       }
 
       if (active) {
-        timer = window.setTimeout(refreshState, 2500)
+        timer = window.setTimeout(refreshState, 1000)
       }
     }
 
-    timer = window.setTimeout(refreshState, 2500)
+    timer = window.setTimeout(refreshState, 1000)
 
     return () => {
       active = false
@@ -454,6 +504,10 @@ export default function RecorderApp() {
 
 
   function openRoom(index: number | null) {
+    editingRoomUrl.current =
+      index === null ? null : rooms[index]?.url ?? null
+
+    roomOpenRef.current = true
     setEditing(index)
 
     setRoomDraft(
@@ -476,9 +530,11 @@ export default function RecorderApp() {
       return
     }
 
-    const updated = rooms.map((room) => ({
-      ...room,
-    }))
+    const baseRooms = (
+      pendingExternalRooms.current ?? rooms
+    ).map((room) => ({ ...room }))
+
+    const updated = baseRooms
 
     const item = {
       ...roomDraft,
@@ -486,8 +542,7 @@ export default function RecorderApp() {
       name: roomDraft.name.trim(),
     }
 
-    const target =
-      editing === null ? updated.length : editing
+    let target = updated.length
 
     if (editing === null) {
       updated.push({
@@ -495,9 +550,20 @@ export default function RecorderApp() {
         id: String(target),
       })
     } else {
-      updated[editing] = {
-        ...updated[editing],
-        ...item,
+      const originalUrl = editingRoomUrl.current
+      const latestIndex = pendingExternalRooms.current && originalUrl
+        ? updated.findIndex((room) => room.url === originalUrl)
+        : editing
+
+      if (latestIndex >= 0 && latestIndex < updated.length) {
+        target = latestIndex
+        updated[latestIndex] = {
+          ...updated[latestIndex],
+          ...item,
+        }
+      } else {
+        target = updated.length
+        updated.push({ ...item, id: String(target) })
       }
     }
 
@@ -517,6 +583,11 @@ export default function RecorderApp() {
       setSelected(target)
       setRoomQuery("")
       setPreviewFailed(false)
+      pendingExternalRooms.current = null
+      roomOpenRef.current = false
+      roomsRevision.current = ""
+      setRoomsSyncTime(new Date().toLocaleTimeString())
+      setRoomsSyncStatus("synced")
       setRoomOpen(false)
 
       if (item.enabled && !state?.running) {
@@ -543,13 +614,21 @@ export default function RecorderApp() {
     if (!selectedRoom) return
 
     try {
+      const latestRooms = pendingExternalRooms.current ?? rooms
+      const deletingUrl = selectedRoom.url
+
       const result = await api<{
         rooms: Room[]
       }>("/api/rooms/save", {
-        rooms: rooms.filter(
-          (_, index) => index !== selected
+        rooms: latestRooms.filter(
+          (room) => room.url !== deletingUrl
         ),
       })
+
+      pendingExternalRooms.current = null
+      roomsRevision.current = ""
+      setRoomsSyncTime(new Date().toLocaleTimeString())
+      setRoomsSyncStatus("synced")
 
       setState((current) =>
         current
@@ -743,6 +822,15 @@ export default function RecorderApp() {
 
         <div className="sidebar-section-title">
           <span>{t("rooms")}</span>
+          <span className="text-xs text-muted-foreground">
+            {roomsSyncStatus === "synced"
+              ? language === "en"
+                ? `Synced ${roomsSyncTime}`
+                : `已同步 ${roomsSyncTime}`
+              : language === "en"
+                ? "Waiting for sync"
+                : "等待同步"}
+          </span>
           <span>
             {visibleRooms.length} / {rooms.length}
           </span>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import mimetypes
 import os
@@ -205,6 +206,13 @@ def save_rooms(rooms: list[dict]) -> None:
             lines.append(f"{prefix}{quality},{url}" + (f",{name}" if name else ""))
     URL_CONFIG.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
+
+def rooms_revision() -> str:
+    """Return a content fingerprint for URL_config.ini."""
+    try:
+        return hashlib.sha256(URL_CONFIG.read_bytes()).hexdigest()
+    except OSError:
+        return "missing"
 
 
 class Recorder:
@@ -524,7 +532,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"language": read_ui_language()})
         elif parsed.path == "/api/state":
             self.send_json({
-                "rooms": parse_rooms(), "running": RECORDER.running,
+                "rooms": parse_rooms(), "roomsRevision": rooms_revision(), "running": RECORDER.running,
                 "startedAt": RECORDER.started_at,
                 "shutdown": SHUTDOWN_SCHEDULER.get_state(),
                 "settings": {

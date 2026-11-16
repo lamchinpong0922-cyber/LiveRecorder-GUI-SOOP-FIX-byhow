@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -191,7 +192,16 @@ def run_desktop() -> None:
         session = DesktopTraySession(window, lambda: True)
         window.events.closing += session.on_closing
         session.start()
-        webview.start(gui="edgechromium", private_mode=False)
+
+        if "--minimize-after-5" in sys.argv:
+            def schedule_minimize():
+                timer = threading.Timer(5, window.minimize)
+                timer.daemon = True
+                timer.start()
+
+            webview.start(schedule_minimize, gui="edgechromium", private_mode=False)
+        else:
+            webview.start(gui="edgechromium", private_mode=False)
     finally:
         if session is not None:
             session.stop()
