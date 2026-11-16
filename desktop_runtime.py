@@ -2,14 +2,55 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Callable
 from typing import Any
 
-from app_runtime import BUNDLE_ROOT
+from app_runtime import APP_ROOT, BUNDLE_ROOT
 from tray_runtime import TrayController
 from webui import server as recorder_server
 
+_WINDOW_STATE_FILE = APP_ROOT / "config" / "desktop_window.json"
+
+
+def load_window_size() -> tuple[int, int]:
+    defaults = (1280, 780)
+    try:
+        data = json.loads(_WINDOW_STATE_FILE.read_text(encoding="utf-8"))
+        width = int(data.get("width", defaults[0]))
+        height = int(data.get("height", defaults[1]))
+        if width < 950 or height < 650:
+            return defaults
+        return min(width, 3000), min(height, 2000)
+    except Exception:
+        return defaults
+
+
+def save_window_size(window: Any) -> None:
+    try:
+        width, height = window.get_size()
+        width, height = int(width), int(height)
+
+        # 不把最大化或異常尺寸當成一般視窗大小保存。
+        if width < 950 or height < 650:
+            return
+        if width >= 3000 or height >= 2000:
+            return
+
+        _WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = _WINDOW_STATE_FILE.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {"width": width, "height": height},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(_WINDOW_STATE_FILE)
+    except Exception:
+        pass
 
 class DesktopTraySession:
     def __init__(self, window: Any, active: Callable[[], bool]) -> None:
@@ -38,6 +79,9 @@ class DesktopTraySession:
         self._window.destroy()
 
     def on_closing(self) -> bool:
+        if self._active():
+            save_window_size(self._window)
+
         if not self._active() or self._exiting.is_set():
             return True
         # pywebview's closing event runs on the UI thread. Hide after the
@@ -76,7 +120,6 @@ class ModePickerBridge:
                 recorder_server.RECORDER.append(f"自動啟動錄製失敗：{exc}", "error")
             try:
                 self._window.title = "LiveRecorder 控制台"
-                self._window.maximize()
             except Exception:
                 pass  # The React view can still load at the picker's size.
         else:
@@ -133,15 +176,16 @@ def run_desktop() -> None:
     if not index.is_file():
         raise FileNotFoundError(f"找不到桌面介面：{index}。請先執行 desktop-ui 的 npm run build。")
 
-    httpd = recorder_server.create_server(0)
+    httpd = recorder_server.create_server(18765)
     worker = threading.Thread(target=httpd.serve_forever, name="desktop-ui-http", daemon=True)
     worker.start()
     session: DesktopTraySession | None = None
     try:
         port = httpd.server_address[1]
+        width, height = load_window_size()
         window = webview.create_window(
             "LiveRecorder 控制台", f"http://127.0.0.1:{port}/desktop/",
-            width=1280, height=780, min_size=(950, 650), maximized=True,
+            width=width, height=height, min_size=(950, 650), maximized=False,
             background_color="#121720",
         )
         session = DesktopTraySession(window, lambda: True)
