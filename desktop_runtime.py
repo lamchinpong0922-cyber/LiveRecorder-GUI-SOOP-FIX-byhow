@@ -28,15 +28,35 @@ def load_window_size() -> tuple[int, int]:
         return defaults
 
 
-def save_window_size(window: Any) -> None:
+def _write_window_state_error(message: str) -> None:
     try:
-        width, height = window.get_size()
+        _WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        error_file = _WINDOW_STATE_FILE.with_name("desktop_window.error.log")
+        with error_file.open("a", encoding="utf-8") as stream:
+            from datetime import datetime
+            stream.write(f"[{datetime.now().isoformat(timespec='seconds')}] {message}\n")
+    except Exception:
+        pass
+
+
+def save_window_size(
+    window: Any,
+    width: Any = None,
+    height: Any = None,
+) -> None:
+    try:
+        # Prefer the dimensions supplied by pywebview's resized event.
+        if width is not None and height is not None:
+            try:
+                width, height = int(width), int(height)
+            except (TypeError, ValueError):
+                width, height = (window.width, window.height)
+        else:
+            width, height = (window.width, window.height)
+
         width, height = int(width), int(height)
 
-        # 不把最大化或異常尺寸當成一般視窗大小保存。
-        if width < 950 or height < 650:
-            return
-        if width >= 3000 or height >= 2000:
+        if width < 950 or height < 650 or width >= 3000 or height >= 2000:
             return
 
         _WINDOW_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -50,9 +70,11 @@ def save_window_size(window: Any) -> None:
             encoding="utf-8",
         )
         temporary.replace(_WINDOW_STATE_FILE)
-    except Exception:
-        pass
 
+    except Exception as exc:
+        _write_window_state_error(
+            f"save_window_size failed: {type(exc).__name__}: {exc}"
+        )
 class DesktopTraySession:
     def __init__(self, window: Any, active: Callable[[], bool]) -> None:
         self._window = window
@@ -61,7 +83,7 @@ class DesktopTraySession:
         self._tray = TrayController(
             open_ui=self.open_ui,
             exit_app=self.exit_app,
-            recorder_running=lambda: recorder_server.RECORDER.running,
+            recorder_running=lambda: recorder_server.RECORDER.monitoring_active,
             recording_active=lambda: recorder_server.RECORDER.recording_active,
             language=recorder_server.read_ui_language,
         )
@@ -95,6 +117,17 @@ class DesktopTraySession:
         # close has been cancelled so the WinForms event handler can return.
         threading.Thread(target=self._window.hide, name="desktop-hide", daemon=True).start()
         return False
+
+
+class DesktopAppBridge:
+    def __init__(self) -> None:
+        self._session: DesktopTraySession | None = None
+
+    def exit_app(self) -> dict[str, bool]:
+        if self._session is None:
+            return {"ok": False}
+        self._session.exit_app()
+        return {"ok": True}
 
 
 class ModePickerBridge:
@@ -190,14 +223,17 @@ def run_desktop() -> None:
     try:
         port = httpd.server_address[1]
         width, height = load_window_size()
+        bridge = DesktopAppBridge()
         window = webview.create_window(
             "LiveRecorder 控制台", f"http://127.0.0.1:{port}/desktop/",
+            js_api=bridge,
             width=width, height=height, min_size=(950, 650), maximized=False,
             background_color="#121720",
         )
         session = DesktopTraySession(window, lambda: True)
+        bridge._session = session
         window.events.closing += session.on_closing
-        window.events.resized += lambda *_: save_window_size(window)
+        window.events.resized += lambda width=None, height=None, *_: save_window_size(window, width, height)
         session.start()
 
         if "--minimize-after-5" in sys.argv:

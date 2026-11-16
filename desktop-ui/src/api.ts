@@ -38,6 +38,7 @@ export type ShutdownState = {
 
 export type Snapshot = {
   rooms: Room[]
+  recordingRoomUrls: string[]
   running: boolean
   startedAt: number | null
   settings: Settings

@@ -16,6 +16,7 @@ import subprocess
 import signal
 import threading
 import time
+import json
 import datetime
 import re
 import shutil
@@ -104,6 +105,7 @@ not_record_list = []
 start_display_time = datetime.datetime.now()
 global_proxy = False
 recording_time_list = {}
+recording_url_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 data_root = os.environ.get('LIVE_RECORDER_DATA_ROOT', script_path)
 
@@ -114,6 +116,59 @@ RECORDING_STATE_FILE = os.path.join(
     ".live_recording_state.json"
 )
 
+STOP_ALL_RESULT_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".stop_all_result.json"
+)
+_STOP_ALL_CONVERSION_RESULTS = []
+_STOP_ALL_CONVERSION_LOCK = threading.Lock()
+
+
+def record_stop_conversion_result(path, success, error=""):
+    try:
+        item = {
+            "path": str(path),
+            "success": bool(success),
+            "error": str(error or "")
+        }
+        with _STOP_ALL_CONVERSION_LOCK:
+            _STOP_ALL_CONVERSION_RESULTS.append(item)
+    except Exception:
+        pass
+
+
+def write_stop_all_result():
+    try:
+        with _STOP_ALL_CONVERSION_LOCK:
+            items = list(_STOP_ALL_CONVERSION_RESULTS)
+
+        failed = [item for item in items if not item["success"]]
+        payload = {
+            "ok": not failed,
+            "items": items,
+            "failed": failed,
+            "completed_at": time.time()
+        }
+
+        temporary = STOP_ALL_RESULT_FILE + f".{os.getpid()}.tmp"
+        with open(temporary, "w", encoding="utf-8") as result_file:
+            json.dump(payload, result_file, ensure_ascii=False, indent=2)
+        os.replace(temporary, STOP_ALL_RESULT_FILE)
+
+    except Exception as exc:
+        logger.error(f"寫入停止全部轉檔結果失敗：{exc}")
+
+
+_RECORDING_STATE_PUBLISH_LOCK = threading.Lock()
+
+def _serialize_recording_state_publish(function):
+    def wrapper():
+        with _RECORDING_STATE_PUBLISH_LOCK:
+            return function()
+    return wrapper
+
+
+@_serialize_recording_state_publish
 def publish_recording_state():
     try:
         active_recordings = []
@@ -124,6 +179,7 @@ def publish_recording_state():
             started_at = info[0]
             active_recordings.append({
                 "name": str(record_name),
+                "url": str(recording_url_list.get(record_name, "")),
                 "started_at": started_at.timestamp(),
                 "quality": str(info[1])
             })
@@ -523,6 +579,7 @@ def run_script(command: str) -> None:
 def clear_record_info(record_name: str, record_url: str) -> None:
     global monitoring
     recording.discard(record_name)
+    recording_url_list.pop(record_name, None)
     publish_recording_state()
     if record_url in url_comments and record_url in running_list:
         running_list.remove(record_url)
@@ -688,6 +745,9 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
                     if not ts_files:
                         conversion_failed = True
+                        record_stop_conversion_result(
+                            save_file_path, False, "找不到可轉檔的 TS 檔案"
+                        )
                         logger.error(
                             f"[{record_name}]停止全部時找不到可轉檔的 TS：{save_file_path}"
                         )
@@ -703,6 +763,10 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                                 force_copy=True
                             )
 
+                            record_stop_conversion_result(
+                                path, converted,
+                                "" if converted else "MP4 轉檔失敗"
+                            )
                             if not converted:
                                 conversion_failed = True
                                 logger.error(
@@ -711,6 +775,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
                         except Exception as e:
                             conversion_failed = True
+                            record_stop_conversion_result(path, False, str(e))
                             logger.error(
                                 f"[{record_name}]MP4 轉檔發生錯誤：{path}，{e}"
                             )
@@ -725,6 +790,10 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         force_copy=True
                     )
 
+                    record_stop_conversion_result(
+                        save_file_path, converted,
+                        "" if converted else "MP4 轉檔失敗"
+                    )
                     if not converted:
                         conversion_failed = True
                         logger.error(
@@ -733,6 +802,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
             except Exception as e:
                 conversion_failed = True
+                record_stop_conversion_result(save_file_path, False, str(e))
                 logger.error(
                     f"[{record_name}]停止全部時啟動 MP4 轉檔失敗：{e}"
                 )
@@ -826,6 +896,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         logger.debug("腳本命令執行結束!")
 
     recording.discard(record_name)
+    recording_url_list.pop(record_name, None)
     publish_recording_state()
 
     if stop_requested:
@@ -1567,6 +1638,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     ffmpeg_command.insert(2, proxy_address)
 
                                 recording.add(record_name)
+                                recording_url_list[record_name] = record_url
                                 start_record_time = datetime.datetime.now()
                                 recording_time_list[record_name] = [start_record_time, record_quality_zh]
                                 publish_recording_state()
@@ -1688,6 +1760,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         flv_url = port_info.get('flv_url')
                                         if flv_url:
                                             recording.add(record_name)
+                                            recording_url_list[record_name] = record_url
                                             start_record_time = datetime.datetime.now()
                                             recording_time_list[record_name] = [start_record_time, record_quality_zh]
                                             publish_recording_state()
@@ -1702,6 +1775,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制完成\n")
 
                                             recording.discard(record_name)
+                                            recording_url_list.pop(record_name, None)
                                             publish_recording_state()
                                         else:
                                             logger.debug("未找到FLV直播流，跳过录制")
@@ -2174,6 +2248,7 @@ while True:
                 worker_thread.join()
 
         logger.info("所有錄製工作已結束，錄製核心準備退出")
+        write_stop_all_result()
         break
 
     try:

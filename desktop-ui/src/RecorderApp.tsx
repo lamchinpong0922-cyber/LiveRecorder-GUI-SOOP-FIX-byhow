@@ -88,6 +88,7 @@ export default function RecorderApp() {
   const [roomsSyncTime, setRoomsSyncTime] = useState("--:--:--")
   const [roomsSyncStatus, setRoomsSyncStatus] = useState("waiting")
   const [stopPending, setStopPending] = useState(false)
+  const [stopFailures, setStopFailures] = useState<Array<{path: string; error: string}>>([])
 
   // 三欄布局寬度：保存使用者上次調整的結果。
   const layoutContainer = useRef<HTMLDivElement>(null)
@@ -244,6 +245,9 @@ export default function RecorderApp() {
   const label = (room: Room) =>
     roomLabel(room, t("unnamedRoom"))
 
+  const isRoomRecording = (room: Room) =>
+    (state?.recordingRoomUrls ?? []).includes(room.url)
+
   const enabledCount =
     rooms.filter((room) => room.enabled).length
 
@@ -382,10 +386,6 @@ export default function RecorderApp() {
             Math.min(current, data.rooms.length - 1)
           )
         )
-
-        if (!data.running) {
-          setStopPending(false)
-        }
 
       } catch {
         // 下次輪詢重新嘗試。
@@ -702,16 +702,56 @@ export default function RecorderApp() {
 
     try {
       setStopPending(true)
+      setStopFailures([])
 
       const result = await api<{
         ok: boolean
         message: string
+        items?: Array<{path: string; success: boolean; error?: string}>
+        failed?: Array<{path: string; error: string}>
       }>("/api/recorder/stop", {})
+
+      if (!result.ok) {
+        const failures = result.failed ?? []
+        setStopFailures(
+          failures.length
+            ? failures
+            : [{path: "停止或轉檔程序", error: result.message}]
+        )
+        setStopPending(false)
+        announce(result.message)
+        return
+      }
 
       announce(result.message)
 
+      await new Promise(resolve => window.setTimeout(resolve, 2000))
+
+      const desktopApi = (
+        window as Window & {
+          pywebview?: {
+            api?: { exit_app?: () => Promise<unknown> }
+          }
+        }
+      ).pywebview?.api
+
+      if (!desktopApi?.exit_app) {
+        setStopPending(false)
+        setStopFailures([{
+          path: "桌面程式關閉",
+          error: "無法連接桌面關閉介面，請從系統匣選擇「停止錄製並結束程式」"
+        }])
+        return
+      }
+
+      await desktopApi.exit_app()
+
     } catch (error) {
       setStopPending(false)
+      setStopFailures([{
+        path: "停止全部並轉 MP4",
+        error: (error as Error).message
+      }])
       announce((error as Error).message)
     }
   }
@@ -900,10 +940,16 @@ export default function RecorderApp() {
                     <strong>{label(room)}</strong>
                     <small>
                       {room.quality} 繚{" "}
-                      {t(
-                        room.enabled
-                          ? "monitoringEnabled"
-                          : "paused"
+                      {isRoomRecording(room) ? (
+                        <span style={{ color: "#3b82f6", fontWeight: 600 }}>
+                          {language === "en" ? "Recording" : "正在錄製中"}
+                        </span>
+                      ) : (
+                        t(
+                          room.enabled
+                            ? "monitoringEnabled"
+                            : "paused"
+                        )
                       )}
                     </small>
                   </span>
@@ -1034,12 +1080,18 @@ export default function RecorderApp() {
               }`}
             />
 
-            {t(
-              selectedRoom
-                ? selectedRoom.enabled
-                  ? "monitoringEnabled"
-                  : "paused"
-                : "notSelected"
+            {selectedRoom && isRoomRecording(selectedRoom) ? (
+              <span style={{ color: "#3b82f6", fontWeight: 600 }}>
+                {language === "en" ? "Recording" : "正在錄製中"}
+              </span>
+            ) : (
+              t(
+                selectedRoom
+                  ? selectedRoom.enabled
+                    ? "monitoringEnabled"
+                    : "paused"
+                  : "notSelected"
+              )
             )}
           </span>
         </div>
@@ -1438,6 +1490,20 @@ export default function RecorderApp() {
         </DialogContent>
       </Dialog>
 
+
+      {stopFailures.length > 0 && (
+        <div className="notice" role="alert">
+          <strong>MP4 轉檔失敗，程式保持開啟</strong>
+          <ul>
+            {stopFailures.map((item, index) => (
+              <li key={`${item.path}-${index}`}>
+                <div>{item.path}</div>
+                <div>{item.error}</div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {notice && (
         <div className="notice" role="status">

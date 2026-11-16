@@ -216,6 +216,79 @@ def rooms_revision() -> str:
         return "missing"
 
 
+def active_core_states():
+    """Yield state files belonging to currently running recorder processes."""
+    for state_file in CORE.glob(".live_recording_state.*.json"):
+        handle = None
+        try:
+            pid = int(state_file.name.split(".")[-2])
+
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel32.OpenProcess.argtypes = (
+                    wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+                )
+                kernel32.OpenProcess.restype = wintypes.HANDLE
+                kernel32.GetExitCodeProcess.argtypes = (
+                    wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)
+                )
+                kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+                kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+                kernel32.CloseHandle.restype = wintypes.BOOL
+
+                handle = kernel32.OpenProcess(0x1000, False, pid)
+                if not handle:
+                    continue
+
+                exit_code = wintypes.DWORD()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    continue
+                if exit_code.value != 259:
+                    continue
+            else:
+                try:
+                    os.kill(pid, 0)
+                except PermissionError:
+                    pass
+                except OSError:
+                    continue
+
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            if state.get("pid") == pid:
+                yield state
+
+        except (OSError, ValueError, TypeError, IndexError):
+            continue
+        finally:
+            if handle:
+                try:
+                    kernel32.CloseHandle(handle)
+                except Exception:
+                    pass
+
+
+def active_recording_room_urls() -> list[str]:
+    """Return exact source URLs for rooms currently being recorded."""
+    urls: set[str] = set()
+
+    for state in active_core_states():
+        recordings = state.get("recording", [])
+        if not isinstance(recordings, list):
+            continue
+
+        for item in recordings:
+            if not isinstance(item, dict):
+                continue
+
+            url = item.get("url")
+            if isinstance(url, str) and url.strip():
+                urls.add(url.strip())
+
+    return sorted(urls)
+
 class Recorder:
     def __init__(self) -> None:
         self.process: subprocess.Popen[str] | None = None
@@ -231,87 +304,12 @@ class Recorder:
         return bool(self.process and self.process.poll() is None)
 
     @property
-    @property
+    def monitoring_active(self) -> bool:
+        return any(True for _ in active_core_states())
+
     @property
     def recording_active(self) -> bool:
-        """Whether any live recorder core process is recording."""
-        if not self.running:
-            return False
-
-        try:
-            for state_file in CORE.glob(".live_recording_state.*.json"):
-                try:
-                    pid_text = state_file.name.split(".")[-2]
-                    pid = int(pid_text)
-
-                    if os.name == "nt":
-                        import ctypes
-                        from ctypes import wintypes
-
-                        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-                        kernel32.OpenProcess.argtypes = (
-                            wintypes.DWORD,
-                            wintypes.BOOL,
-                            wintypes.DWORD,
-                        )
-                        kernel32.OpenProcess.restype = wintypes.HANDLE
-
-                        kernel32.GetExitCodeProcess.argtypes = (
-                            wintypes.HANDLE,
-                            ctypes.POINTER(wintypes.DWORD),
-                        )
-                        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-
-                        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-                        kernel32.CloseHandle.restype = wintypes.BOOL
-
-                        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-                        STILL_ACTIVE = 259
-
-                        handle = kernel32.OpenProcess(
-                            PROCESS_QUERY_LIMITED_INFORMATION,
-                            False,
-                            pid,
-                        )
-                        if not handle:
-                            continue
-
-                        try:
-                            exit_code = wintypes.DWORD()
-                            ok = kernel32.GetExitCodeProcess(
-                                handle,
-                                ctypes.byref(exit_code),
-                            )
-                            if not ok or exit_code.value != STILL_ACTIVE:
-                                continue
-                        finally:
-                            kernel32.CloseHandle(handle)
-
-                    else:
-                        try:
-                            os.kill(pid, 0)
-                        except PermissionError:
-                            pass
-                        except OSError:
-                            continue
-
-                    state = json.loads(
-                        state_file.read_text(encoding="utf-8")
-                    )
-                    if state.get("pid") != pid:
-                        continue
-                    if state.get("recording"):
-                        return True
-
-                except (OSError, ValueError, TypeError, IndexError):
-                    continue
-
-        except OSError:
-            return False
-
-        return False
-
+        return any(bool(state.get("recording")) for state in active_core_states())
 
     def append(self, text: str, level: str = "info") -> None:
         text = TO_TRADITIONAL.convert(
@@ -424,6 +422,78 @@ class Recorder:
 
         self.append("已通知核心停止全部錄製，正在等待檔案收尾及轉檔…")
         return True, "停止訊號已送出，核心將自行完成收尾及轉檔"
+
+    def stop_and_wait(self) -> dict:
+        result_file = CORE / ".stop_all_result.json"
+
+        if not self.running:
+            return {
+                "ok": False,
+                "message": "錄製核心尚未執行",
+                "items": [],
+                "failed": []
+            }
+
+        try:
+            result_file.unlink(missing_ok=True)
+        except OSError as exc:
+            return {
+                "ok": False,
+                "message": f"無法清除上次轉檔結果：{exc}",
+                "items": [],
+                "failed": []
+            }
+
+        requested, message = self.stop()
+        if not requested:
+            return {
+                "ok": False, "message": message,
+                "items": [], "failed": []
+            }
+
+        process = self.process
+        try:
+            exit_code = process.wait() if process is not None else -1
+        except Exception as exc:
+            return {
+                "ok": False,
+                "message": f"等待錄製核心結束失敗：{exc}",
+                "items": [],
+                "failed": []
+            }
+
+        try:
+            summary = json.loads(result_file.read_text(encoding="utf-8"))
+            items = summary.get("items", [])
+            failed = summary.get("failed", [])
+            success = bool(summary.get("ok")) and exit_code == 0
+
+            if exit_code != 0:
+                message = f"核心結束代碼為 {exit_code}，請查看執行日誌"
+            elif failed:
+                message = f"轉檔完成，但有 {len(failed)} 個項目失敗，視窗將保持開啟"
+            elif not success:
+                message = "轉檔結果未能確認，視窗將保持開啟"
+            else:
+                message = "全部錄製已停止，MP4 轉檔完成"
+
+            return {
+                "ok": success,
+                "message": message,
+                "items": items,
+                "failed": failed
+            }
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "message": f"核心已結束，但無法讀取轉檔結果：{exc}",
+                "items": [],
+                "failed": [{
+                    "path": str(result_file),
+                    "error": "找不到或無法讀取轉檔結果"
+                }]
+            }
 
     def get_logs(self, since: int) -> list[dict]:
         with self.lock:
@@ -616,7 +686,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"language": read_ui_language()})
         elif parsed.path == "/api/state":
             self.send_json({
-                "rooms": parse_rooms(), "roomsRevision": rooms_revision(), "running": RECORDER.running,
+                "rooms": parse_rooms(), "roomsRevision": rooms_revision(),
+                "recordingRoomUrls": active_recording_room_urls(), "running": RECORDER.running,
                 "startedAt": RECORDER.started_at,
                 "shutdown": SHUTDOWN_SCHEDULER.get_state(),
                 "settings": {
@@ -730,11 +801,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             elif self.path == "/api/recorder/stop":
-                ok, message = RECORDER.stop()
-                self.send_json(
-                    {"ok": ok, "message": message},
-                    200 if ok else 409,
-                )
+                result = RECORDER.stop_and_wait()
+                self.send_json(result, 200)
 
             elif self.path == "/api/rooms/save":
                 save_rooms(payload.get("rooms", []))
@@ -946,7 +1014,7 @@ def main() -> None:
         tray = TrayController(
             open_ui=lambda: webbrowser.open(address),
             exit_app=stopped.set,
-            recorder_running=lambda: RECORDER.running,
+            recorder_running=lambda: RECORDER.monitoring_active,
             recording_active=lambda: RECORDER.recording_active,
             language=read_ui_language,
         )
