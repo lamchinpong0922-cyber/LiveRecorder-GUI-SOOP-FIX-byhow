@@ -3,7 +3,9 @@ import {
   useEffect,
   useRef,
   useState,
-  type FormEvent,
+  type FormEvent,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
 } from "react"
 
 import {
@@ -84,6 +86,110 @@ export default function RecorderApp() {
   const [notice, setNotice] = useState("")
   const [stopPending, setStopPending] = useState(false)
 
+  // 三欄布局寬度：保存使用者上次調整的結果。
+  const layoutContainer = useRef<HTMLDivElement>(null)
+
+  const [layoutWidths, setLayoutWidths] = useState(() => {
+    const defaults = { sidebar: 280, detail: 350 }
+
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem("live-recorder-layout") || "null"
+      )
+
+      return {
+        sidebar: Number.isFinite(saved?.sidebar)
+          ? Math.max(220, Math.min(600, saved.sidebar))
+          : defaults.sidebar,
+        detail: Number.isFinite(saved?.detail)
+          ? Math.max(280, Math.min(700, saved.detail))
+          : defaults.detail,
+      }
+    } catch {
+      return defaults
+    }
+  })
+
+  const resizeDrag = useRef<{
+    column: "sidebar" | "detail"
+    startX: number
+    startSidebar: number
+    startDetail: number
+    containerWidth: number
+  } | null>(null)
+
+  useEffect(() => {
+    localStorage.setItem(
+      "live-recorder-layout",
+      JSON.stringify(layoutWidths)
+    )
+  }, [layoutWidths])
+
+  function startColumnResize(
+    event: ReactPointerEvent<HTMLDivElement>,
+    column: "sidebar" | "detail",
+  ) {
+    if (event.button !== 0) return
+
+    const rect = layoutContainer.current?.getBoundingClientRect()
+    if (!rect) return
+
+    event.preventDefault()
+
+    resizeDrag.current = {
+      column,
+      startX: event.clientX,
+      startSidebar: layoutWidths.sidebar,
+      startDetail: layoutWidths.detail,
+      containerWidth: rect.width,
+    }
+
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function moveColumnResize(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    const drag = resizeDrag.current
+    if (!drag) return
+
+    const delta = event.clientX - drag.startX
+
+    if (drag.column === "sidebar") {
+      const maximum = Math.max(
+        220,
+        drag.containerWidth - drag.startDetail - 280 - 14
+      )
+
+      setLayoutWidths((current) => ({
+        ...current,
+        sidebar: Math.round(
+          Math.max(220, Math.min(maximum, drag.startSidebar + delta))
+        ),
+      }))
+    } else {
+      const maximum = Math.max(
+        280,
+        drag.containerWidth - drag.startSidebar - 280 - 14
+      )
+
+      setLayoutWidths((current) => ({
+        ...current,
+        detail: Math.round(
+          Math.max(280, Math.min(maximum, drag.startDetail + delta))
+        ),
+      }))
+    }
+  }
+
+  function stopColumnResize() {
+    resizeDrag.current = null
+  }
+
+  function resetLayoutWidths() {
+    resizeDrag.current = null
+    setLayoutWidths({ sidebar: 280, detail: 350 })
+  }
   const [shutdownMode, setShutdownMode] =
     useState<"once" | "daily">("once")
 
@@ -578,7 +684,14 @@ export default function RecorderApp() {
 
 
   return (
-    <div className="app-shell">
+    <div
+      ref={layoutContainer}
+      className="app-shell"
+      style={{
+        "--sidebar-width": `${layoutWidths.sidebar}px`,
+        "--detail-width": `${layoutWidths.detail}px`,
+      } as CSSProperties}
+    >
 
       <aside className="room-sidebar">
 
@@ -771,7 +884,22 @@ export default function RecorderApp() {
       </aside>
 
 
-      <main className="detail-panel">
+            <div
+        className="column-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="調整直播列表寬度"
+        title="拖曳調整寬度，雙擊恢復預設"
+        onPointerDown={(event) =>
+          startColumnResize(event, "sidebar")
+        }
+        onPointerMove={moveColumnResize}
+        onPointerUp={stopColumnResize}
+        onPointerCancel={stopColumnResize}
+        onLostPointerCapture={stopColumnResize}
+        onDoubleClick={resetLayoutWidths}
+      />
+<main className="detail-panel">
 
         <div className="panel-eyebrow">
           {t("roomDetails")}
@@ -1012,7 +1140,22 @@ export default function RecorderApp() {
       </main>
 
 
-      <section className="log-panel">
+            <div
+        className="column-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="調整直播詳情寬度"
+        title="拖曳調整寬度，雙擊恢復預設"
+        onPointerDown={(event) =>
+          startColumnResize(event, "detail")
+        }
+        onPointerMove={moveColumnResize}
+        onPointerUp={stopColumnResize}
+        onPointerCancel={stopColumnResize}
+        onLostPointerCapture={stopColumnResize}
+        onDoubleClick={resetLayoutWidths}
+      />
+<section className="log-panel">
 
         <div className="log-header">
           <h2>{t("logs")}</h2>

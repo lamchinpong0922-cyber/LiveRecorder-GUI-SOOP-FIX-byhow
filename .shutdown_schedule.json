@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "mode": "once",
+  "time": "03:00",
+  "nextRun": null,
+  "phase": "idle",
+  "remaining": 0,
+  "message": "排程尚未啟用，請重新設定"
+}

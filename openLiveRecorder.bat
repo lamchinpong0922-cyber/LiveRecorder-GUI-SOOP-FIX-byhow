@@ -29,39 +29,62 @@ if exist ".venv\Scripts\python.exe" (
 echo [INFO] Python: %PYTHON%
 echo.
 
-REM ===== 檢查 Pillow =====
-echo [CHECK] 正在檢查 Pillow...
+REM ===== 檢查必要套件 =====
+echo [CHECK] 正在檢查必要套件...
 
-"%PYTHON%" -c "import PIL" >nul 2>&1
+"%PYTHON%" -c "import PIL, pystray, webview" >nul 2>&1
 
 if errorlevel 1 (
-    echo [INSTALL] 缺少 Pillow，正在自動安裝...
-    "%PYTHON%" -m pip install --upgrade Pillow
+    echo [INSTALL] 正在安裝必要套件...
+    echo [INFO] 使用使用者安裝模式，並停用 pip 快取。
+    echo.
+
+    "%PYTHON%" -m pip install --user --no-cache-dir Pillow pystray pywebview
 
     if errorlevel 1 (
         echo.
-        echo [ERROR] Pillow 安裝失敗。
+        echo [ERROR] 套件安裝失敗。
         pause
         exit /b 1
     )
-) else (
-    echo [OK] Pillow 已安裝。
 )
 
-REM ===== 啟動 GUI =====
-if not exist "gui.py" (
-    echo [ERROR] 找不到 gui.py
+REM ===== 再次確認套件 =====
+echo.
+echo [CHECK] 確認套件載入...
+
+"%PYTHON%" -c "import PIL, pystray, webview"
+
+if errorlevel 1 (
+    echo.
+    echo [ERROR] 必要套件仍無法載入。
     pause
     exit /b 1
 )
 
+echo [OK] 必要套件全部正常。
 echo.
+
+REM ===== 檢查 React 桌面版 =====
+if not exist "desktop-ui\dist\index.html" (
+    echo [ERROR] 找不到 React 桌面版建置檔。
+    pause
+    exit /b 1
+)
+
+if not exist "launcher.py" (
+    echo [ERROR] 找不到 launcher.py
+    pause
+    exit /b 1
+)
+
+REM ===== 啟動 React 桌面版 =====
 echo ==========================================
-echo [INFO] 正在啟動 GUI...
+echo [INFO] 正在啟動 React 桌面版...
 echo ==========================================
 echo.
 
-"%PYTHON%" gui.py
+"%PYTHON%" launcher.py --desktop
 
 set "EXIT_CODE=%ERRORLEVEL%"
 
