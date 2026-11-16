@@ -698,7 +698,6 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
 
                 try:
                     port_info = []
-
             record_finished = False
             run_once = False
             start_pushed = False
