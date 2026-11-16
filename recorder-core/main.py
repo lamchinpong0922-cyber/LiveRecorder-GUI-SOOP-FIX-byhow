@@ -106,6 +106,61 @@ global_proxy = False
 recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 data_root = os.environ.get('LIVE_RECORDER_DATA_ROOT', script_path)
+
+# 桌面系統匣讀取的即時錄影狀態。
+# 使用核心目錄，確保 GUI 與錄製核心讀取同一份檔案。
+RECORDING_STATE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".live_recording_state.json"
+)
+
+def publish_recording_state():
+    try:
+        active_recordings = []
+        for record_name in list(recording):
+            info = recording_time_list.get(record_name)
+            if not info:
+                continue
+            started_at = info[0]
+            active_recordings.append({
+                "name": str(record_name),
+                "started_at": started_at.timestamp(),
+                "quality": str(info[1])
+            })
+
+        payload = {
+            "pid": os.getpid(),
+            "updated_at": time.time(),
+            "recording": active_recordings
+        }
+
+        # 每個核心程序使用自己的狀態檔，避免互相覆蓋。
+        state_path = RECORDING_STATE_FILE + f".{os.getpid()}.json"
+        temporary = state_path + f".{threading.get_ident()}.tmp"
+
+        with open(temporary, "w", encoding="utf-8") as state_file:
+            json.dump(payload, state_file, ensure_ascii=False)
+
+        os.replace(temporary, state_path)
+
+    except Exception as exc:
+        # 不影響錄影工作，但保留錯誤供診斷。
+        try:
+            with open(
+                RECORDING_STATE_FILE + ".error.log",
+                "a",
+                encoding="utf-8"
+            ) as error_file:
+                error_file.write(
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"PID={os.getpid()} {type(exc).__name__}: {exc}\n"
+                )
+        except Exception:
+            pass
+
+
+# 每次核心啟動先清除上次異常結束留下的狀態。
+publish_recording_state()
 config_file = f'{data_root}/config/config.ini'
 url_config_file = f'{data_root}/config/URL_config.ini'
 backup_dir = f'{data_root}/backup_config'
@@ -468,6 +523,7 @@ def run_script(command: str) -> None:
 def clear_record_info(record_name: str, record_url: str) -> None:
     global monitoring
     recording.discard(record_name)
+    publish_recording_state()
     if record_url in url_comments and record_url in running_list:
         running_list.remove(record_url)
         monitoring -= 1
@@ -770,6 +826,7 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         logger.debug("腳本命令執行結束!")
 
     recording.discard(record_name)
+    publish_recording_state()
 
     if stop_requested:
         return True
@@ -1512,6 +1569,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 recording.add(record_name)
                                 start_record_time = datetime.datetime.now()
                                 recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                publish_recording_state()
                                 rec_info = f"\r{anchor_name} 准备开始录制视频: {full_path}"
                                 if show_url:
                                     re_plat = ('WinkTV', 'PandaTV', 'ShowRoom', 'CHZZK', 'Youtube')
@@ -1632,6 +1690,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             recording.add(record_name)
                                             start_record_time = datetime.datetime.now()
                                             recording_time_list[record_name] = [start_record_time, record_quality_zh]
+                                            publish_recording_state()
 
                                             download_success = direct_download_stream(
                                                 flv_url, save_file_path, record_name, record_url, platform
@@ -1643,6 +1702,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制完成\n")
 
                                             recording.discard(record_name)
+                                            publish_recording_state()
                                         else:
                                             logger.debug("未找到FLV直播流，跳过录制")
                                     except Exception as e:

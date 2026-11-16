@@ -3,7 +3,7 @@
   "mode": "once",
   "time": "03:00",
   "nextRun": null,
-  "phase": "cancelled",
+  "phase": "idle",
   "remaining": 0,
-  "message": "定時關機已取消"
+  "message": "排程尚未啟用，請重新設定"
 }

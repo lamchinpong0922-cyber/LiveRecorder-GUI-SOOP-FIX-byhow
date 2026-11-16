@@ -62,6 +62,7 @@ class DesktopTraySession:
             open_ui=self.open_ui,
             exit_app=self.exit_app,
             recorder_running=lambda: recorder_server.RECORDER.running,
+            recording_active=lambda: recorder_server.RECORDER.recording_active,
             language=recorder_server.read_ui_language,
         )
 
@@ -76,8 +77,13 @@ class DesktopTraySession:
             self._window.show()
 
     def exit_app(self) -> None:
+        # 完全結束前保存最後一次視窗尺寸。
+        if self._active():
+            save_window_size(self._window)
+
         self._exiting.set()
         self._window.destroy()
+
 
     def on_closing(self) -> bool:
         if self._active():
@@ -191,11 +197,12 @@ def run_desktop() -> None:
         )
         session = DesktopTraySession(window, lambda: True)
         window.events.closing += session.on_closing
+        window.events.resized += lambda *_: save_window_size(window)
         session.start()
 
         if "--minimize-after-5" in sys.argv:
             def schedule_minimize():
-                timer = threading.Timer(5, window.minimize)
+                timer = threading.Timer(5, window.hide)
                 timer.daemon = True
                 timer.start()
 

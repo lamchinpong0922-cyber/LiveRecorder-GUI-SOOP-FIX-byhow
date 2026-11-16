@@ -36,6 +36,7 @@ UI_LANGUAGE_FILE = APP_ROOT / ".ui-language.json"
 UI_LANGUAGE_LOCK = threading.Lock()
 CONFIG = CONFIG_ROOT / "config.ini"
 URL_CONFIG = CONFIG_ROOT / "URL_config.ini"
+RECORDING_STATE_FILE = CORE / ".live_recording_state.json"
 TO_TRADITIONAL = OpenCC("s2twp")
 
 
@@ -228,6 +229,89 @@ class Recorder:
     @property
     def running(self) -> bool:
         return bool(self.process and self.process.poll() is None)
+
+    @property
+    @property
+    @property
+    def recording_active(self) -> bool:
+        """Whether any live recorder core process is recording."""
+        if not self.running:
+            return False
+
+        try:
+            for state_file in CORE.glob(".live_recording_state.*.json"):
+                try:
+                    pid_text = state_file.name.split(".")[-2]
+                    pid = int(pid_text)
+
+                    if os.name == "nt":
+                        import ctypes
+                        from ctypes import wintypes
+
+                        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+                        kernel32.OpenProcess.argtypes = (
+                            wintypes.DWORD,
+                            wintypes.BOOL,
+                            wintypes.DWORD,
+                        )
+                        kernel32.OpenProcess.restype = wintypes.HANDLE
+
+                        kernel32.GetExitCodeProcess.argtypes = (
+                            wintypes.HANDLE,
+                            ctypes.POINTER(wintypes.DWORD),
+                        )
+                        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+
+                        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+                        kernel32.CloseHandle.restype = wintypes.BOOL
+
+                        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                        STILL_ACTIVE = 259
+
+                        handle = kernel32.OpenProcess(
+                            PROCESS_QUERY_LIMITED_INFORMATION,
+                            False,
+                            pid,
+                        )
+                        if not handle:
+                            continue
+
+                        try:
+                            exit_code = wintypes.DWORD()
+                            ok = kernel32.GetExitCodeProcess(
+                                handle,
+                                ctypes.byref(exit_code),
+                            )
+                            if not ok or exit_code.value != STILL_ACTIVE:
+                                continue
+                        finally:
+                            kernel32.CloseHandle(handle)
+
+                    else:
+                        try:
+                            os.kill(pid, 0)
+                        except PermissionError:
+                            pass
+                        except OSError:
+                            continue
+
+                    state = json.loads(
+                        state_file.read_text(encoding="utf-8")
+                    )
+                    if state.get("pid") != pid:
+                        continue
+                    if state.get("recording"):
+                        return True
+
+                except (OSError, ValueError, TypeError, IndexError):
+                    continue
+
+        except OSError:
+            return False
+
+        return False
+
 
     def append(self, text: str, level: str = "info") -> None:
         text = TO_TRADITIONAL.convert(
@@ -863,6 +947,7 @@ def main() -> None:
             open_ui=lambda: webbrowser.open(address),
             exit_app=stopped.set,
             recorder_running=lambda: RECORDER.running,
+            recording_active=lambda: RECORDER.recording_active,
             language=read_ui_language,
         )
         tray.start_background()

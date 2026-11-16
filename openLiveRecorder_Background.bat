@@ -66,7 +66,7 @@ if errorlevel 1 (
 )
 
 echo Background launch requested. >> "%LOG%"
-echo Application should minimize after approximately 5 seconds.
+echo Application should hide to the system tray after approximately 5 seconds.
 echo CMD will close in 5 seconds.
 timeout /t 5 /nobreak >nul
 exit /b 0
