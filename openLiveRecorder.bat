@@ -1,111 +1,80 @@
 @echo off
-chcp 65001 >nul
 setlocal
-title LiveRecorder GUI SOOP FIX
-
+title LiveRecorder Launcher
 cd /d "%~dp0"
 
-echo ==========================================
-echo   LiveRecorder GUI SOOP FIX
-echo ==========================================
-echo.
+set "LOGDIR=O:\userssss\WIN11\TEMP"
+if not exist "%LOGDIR%" mkdir "%LOGDIR%" >nul 2>&1
+set "LOG=%LOGDIR%\LiveRecorder_Launch.log"
 
-REM ===== 選擇 Python 環境 =====
-if exist ".venv\Scripts\python.exe" (
-    set "PYTHON=.venv\Scripts\python.exe"
-    set "PYTHONW=.venv\Scripts\pythonw.exe"
-) else if exist "venv\Scripts\python.exe" (
-    set "PYTHON=venv\Scripts\python.exe"
-    set "PYTHONW=venv\Scripts\pythonw.exe"
-) else (
-    where python.exe >nul 2>&1
-    if errorlevel 1 (
-        echo [ERROR] 找不到 Python。
-        pause
-        exit /b 1
-    )
+echo ========================================== > "%LOG%"
+echo LiveRecorder startup >> "%LOG%"
+echo DATE: %DATE% %TIME% >> "%LOG%"
+echo ROOT: %CD% >> "%LOG%"
+echo. >> "%LOG%"
 
-    for /f "delims=" %%I in ('where python.exe') do (
-        if not defined PYTHON_EXE set "PYTHON_EXE=%%I"
-    )
+set "PYTHON="
+set "PYTHONW="
 
-    set "PYTHON=%PYTHON_EXE%"
-    set "PYTHONW=%PYTHON_EXE:python.exe=pythonw.exe%"
+if exist ".venv\Scripts\python.exe" set "PYTHON=%CD%\.venv\Scripts\python.exe"
+if not defined PYTHON if exist "venv\Scripts\python.exe" set "PYTHON=%CD%\venv\Scripts\python.exe"
+
+if not defined PYTHON (
+    for /f "delims=" %%P in ('where python.exe 2^>nul') do if not defined PYTHON set "PYTHON=%%P"
 )
 
-echo [INFO] Python: %PYTHON%
-echo.
-
-REM ===== 檢查必要套件 =====
-echo [CHECK] 正在檢查必要套件...
-
-"%PYTHON%" -c "import PIL, pystray, webview" >nul 2>&1
-
-if errorlevel 1 (
-    echo [INSTALL] 正在安裝必要套件...
-    echo [INFO] 使用使用者安裝模式，並停用 pip 快取。
-    echo.
-
-    "%PYTHON%" -m pip install --user --no-cache-dir Pillow pystray pywebview
-
-    if errorlevel 1 (
-        echo.
-        echo [ERROR] 套件安裝失敗。
-        pause
-        exit /b 1
-    )
+if not defined PYTHON (
+    echo ERROR: Python not found. >> "%LOG%"
+    goto FAIL
 )
 
-REM ===== 再次確認套件 =====
-echo.
-echo [CHECK] 確認套件載入...
+for %%I in ("%PYTHON%") do set "PYTHONW=%%~dpnIw.exe"
 
-"%PYTHON%" -c "import PIL, pystray, webview"
-
-if errorlevel 1 (
-    echo.
-    echo [ERROR] 必要套件仍無法載入。
-    pause
-    exit /b 1
+if not exist "%PYTHONW%" (
+    echo ERROR: pythonw.exe not found: %PYTHONW% >> "%LOG%"
+    goto FAIL
 )
 
-echo [OK] 必要套件全部正常。
-echo.
-
-REM ===== 檢查 React 桌面版 =====
-if not exist "desktop-ui\dist\index.html" (
-    echo [ERROR] 找不到 React 桌面版建置檔。
-    pause
-    exit /b 1
-)
+echo PYTHON: %PYTHON% >> "%LOG%"
+echo PYTHONW: %PYTHONW% >> "%LOG%"
 
 if not exist "launcher.py" (
-    echo [ERROR] 找不到 launcher.py
-    pause
-    exit /b 1
+    echo ERROR: launcher.py not found. >> "%LOG%"
+    goto FAIL
 )
 
-REM ===== 檢查 Pythonw =====
-if not exist "%PYTHONW%" (
-    echo [ERROR] 找不到 pythonw.exe：
-    echo %PYTHONW%
-    pause
-    exit /b 1
+if not exist "desktop-ui\dist\index.html" (
+    echo ERROR: desktop-ui\dist\index.html not found. >> "%LOG%"
+    goto FAIL
 )
 
-REM ===== 啟動桌面程式 =====
-echo ==========================================
-echo [INFO] 正在啟動 React 桌面版...
-echo ==========================================
-echo.start "" "%PYTHONW%" launcher.py --desktop
+"%PYTHON%" -c "import PIL, pystray, webview" >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo Installing required Python packages... >> "%LOG%"
+    "%PYTHON%" -m pip install Pillow pystray pywebview >> "%LOG%" 2>&1
+    if errorlevel 1 goto FAIL
+)
+
+"%PYTHON%" -c "import PIL, pystray, webview" >> "%LOG%" 2>&1
+if errorlevel 1 goto FAIL
+echo Starting desktop application... >> "%LOG%"
+start "" "%PYTHONW%" launcher.py --desktop
 
 if errorlevel 1 (
-    echo [ERROR] 桌面程式啟動失敗。
-    pause
-    exit /b 1
+    echo ERROR: Failed to start desktop application. >> "%LOG%"
+    goto FAIL
 )
 
-echo [INFO] 桌面程式已交由背景程序啟動。
-echo [INFO] CMD 將在 5 秒後關閉。
+echo Desktop application launch requested. >> "%LOG%"
+echo CMD will close in 5 seconds.
 timeout /t 5 /nobreak >nul
-exit
+exit /b 0
+
+:FAIL
+echo.
+echo STARTUP FAILED. Details:
+type "%LOG%"
+echo.
+echo LOG: %LOG%
+pause
+exit /b 1
