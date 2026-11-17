@@ -1,11 +1,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
 import threading
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -74,8 +74,6 @@ class ShutdownScheduler:
         except (OSError, ValueError, TypeError):
             pass
 
-        # 程式重新啟動後不恢復監控。
-        # 保留使用者上次選擇的模式及時間，但必須重新按設定排程。
         self.state.update({
             "enabled": False,
             "nextRun": None,
@@ -111,6 +109,111 @@ class ShutdownScheduler:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             check=False,
         )
+
+    @staticmethod
+    def _get_cursor_position() -> tuple[int, int] | None:
+        if os.name != "nt":
+            return None
+
+        class POINT(ctypes.Structure):
+            _fields_ = [
+                ("x", ctypes.c_long),
+                ("y", ctypes.c_long),
+            ]
+
+        point = POINT()
+
+        if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+            return point.x, point.y
+
+        return None
+
+    def _stop_ledkeeper(self, event: threading.Event) -> bool:
+        """
+        先正常要求 LEDKeeper2.exe 結束。
+        等待 5 秒仍未結束，才強制終止指定程序。
+        """
+
+        if event.is_set():
+            return False
+
+        self._update(
+            phase="cleanup",
+            remaining=5,
+            message="正在關閉 MSI Mystic Light 背景程序",
+        )
+
+        try:
+            # 第一次不加 /F，先要求程序正常結束。
+            self._hidden_run([
+                "taskkill.exe",
+                "/IM",
+                "LEDKeeper2.exe",
+            ])
+
+        except OSError:
+            pass
+
+        # 最多等待 5 秒，期間允許取消排程。
+        for remaining in range(5, 0, -1):
+            if event.wait(1):
+                return False
+
+            self._update(
+                remaining=remaining,
+                message="正在等待 MSI Mystic Light 結束",
+            )
+
+        if event.is_set():
+            return False
+
+        # 檢查程序是否仍存在。
+        try:
+            check = subprocess.run(
+                [
+                    "tasklist.exe",
+                    "/FI",
+                    "IMAGENAME eq LEDKeeper2.exe",
+                    "/NH",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="mbcs",
+                errors="replace",
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0,
+                ),
+                check=False,
+            )
+
+            still_running = (
+                "LEDKeeper2.exe" in check.stdout
+            )
+
+        except OSError:
+            still_running = False
+
+        if still_running and not event.is_set():
+            self._update(
+                phase="cleanup",
+                remaining=0,
+                message="正常關閉未成功，正在結束 LEDKeeper2.exe",
+            )
+
+            try:
+                self._hidden_run([
+                    "taskkill.exe",
+                    "/F",
+                    "/IM",
+                    "LEDKeeper2.exe",
+                ])
+            except OSError:
+                pass
+
+        return not event.is_set()
 
     def get_state(self) -> dict:
         with self.lock:
@@ -165,7 +268,6 @@ class ShutdownScheduler:
             now = datetime.now()
             target = self._next_daily(value, now)
 
-            # 每次排程使用新的 Event，避免舊執行緒復活。
             self.cancel_event = threading.Event()
             event = self.cancel_event
 
@@ -209,7 +311,6 @@ class ShutdownScheduler:
             return dict(self.state)
 
     def stop(self) -> None:
-        # 程式真正結束時停止排程。
         self.cancel()
 
     def _update(self, **values) -> None:
@@ -270,13 +371,8 @@ class ShutdownScheduler:
                 enabled = self.state.get("enabled")
                 mode = self.state.get("mode")
 
-            # 單次排程觸發後結束。
             if not enabled or mode != "daily":
                 return
-
-            # 每天模式若當天停止流程發生錯誤，
-            # 保留排程，繼續等待下一個指定時間。
-
 
     def _trigger(self, event: threading.Event) -> None:
         with self.lock:
@@ -311,14 +407,11 @@ class ShutdownScheduler:
             return
 
         try:
-            # 正常通知核心停止，不強制終止 FFmpeg。
             stop_ok, stop_message = self.stop_recorder()
 
             if not stop_ok:
                 process = self.get_process()
 
-                # 核心仍在執行，但停止要求失敗。
-                # 不允許繼續倒數關機。
                 if process is not None and process.poll() is None:
                     self._update(
                         phase="error",
@@ -333,8 +426,6 @@ class ShutdownScheduler:
             )
             return
 
-        # 等待核心真正退出。
-        # 核心必須先完成 TS 收尾及 MP4 轉檔。
         process = self.get_process()
 
         if process is not None:
@@ -342,7 +433,6 @@ class ShutdownScheduler:
                 if event.wait(1):
                     return
 
-            # 核心已退出，但必須確認退出碼正常。
             exit_code = process.returncode
 
             if exit_code != 0:
@@ -359,7 +449,6 @@ class ShutdownScheduler:
         if event.is_set():
             return
 
-        # 只有核心正常完成，才開始 5 分鐘關機倒數。
         self._update(
             phase="countdown",
             remaining=300,
@@ -369,16 +458,29 @@ class ShutdownScheduler:
         if not self._wait(event, 300):
             return
 
+        if event.is_set():
+            return
+
+        # 關機前清理 MSI Mystic Light 指定程序。
+        if not self._stop_ledkeeper(event):
+            return
+
+        if event.is_set():
+            return
+
+        cursor_origin = self._get_cursor_position()
+
         self._update(
             phase="shutdown_retry",
             remaining=0,
-            message="正在執行 Windows 關機",
+            message="正在執行 Windows 關機，移動滑鼠即可取消",
         )
 
         while True:
+            if event.is_set():
+                return
+
             try:
-                # 將「檢查取消訊號」及「送出關機指令」
-                # 放在同一把鎖內，避免取消與關機指令互相錯過。
                 with self.lock:
                     if event.is_set():
                         return
@@ -393,22 +495,35 @@ class ShutdownScheduler:
                     if result.returncode == 0:
                         self.shutdown_requested = True
 
-                if result.returncode == 0:
-                    self._update(
-                        message="已送出關機指令，若未關機將於 120 秒後重試",
-                    )
-                else:
-                    self._update(
-                        message=(
-                            f"關機指令失敗，120 秒後重試"
-                            f"（代碼 {result.returncode}）"
-                        ),
-                    )
+                self._update(
+                    remaining=120,
+                    message="已送出關機指令，每 2 分鐘重新嘗試，移動滑鼠即可取消",
+                )
 
             except OSError as exc:
                 self._update(
-                    message=f"關機指令異常：{exc}，120 秒後重試",
+                    remaining=120,
+                    message=f"關機指令異常：{exc}，2 分鐘後再次嘗試",
                 )
 
-            if not self._wait(event, 120):
-                return
+            for _ in range(1200):
+                if event.wait(0.1):
+                    return
+
+                current_position = self._get_cursor_position()
+
+                if (
+                    cursor_origin is not None
+                    and current_position is not None
+                    and current_position != cursor_origin
+                ):
+                    with self.lock:
+                        self._hidden_run(["shutdown.exe", "/a"])
+                        self.shutdown_requested = False
+
+                    self._update(
+                        phase="cancelled",
+                        remaining=0,
+                        message="偵測到滑鼠移動，已取消關機流程",
+                    )
+                    return
