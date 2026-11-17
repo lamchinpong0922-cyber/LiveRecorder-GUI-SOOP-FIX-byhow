@@ -942,7 +942,7 @@ export default function RecorderApp() {
                       {room.quality} {" "}
                       {isRoomRecording(room) ? (
                         <span style={{ color: "#3b82f6", fontWeight: 600 }}>
-                          {language === "en" ? "Recording" : "正在錄製中"}
+                          {language === "en" ? "Recording" : "___________________正在錄製中"}
                         </span>
                       ) : (
                         t(
@@ -1082,7 +1082,7 @@ export default function RecorderApp() {
 
             {selectedRoom && isRoomRecording(selectedRoom) ? (
               <span style={{ color: "#3b82f6", fontWeight: 600 }}>
-                {language === "en" ? "Recording" : "正在錄製中"}
+                {language === "en" ? "Recording" : "___________________正在錄製中"}
               </span>
             ) : (
               t(
