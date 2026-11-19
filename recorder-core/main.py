@@ -1675,9 +1675,15 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
                                         extension = "mp3" if "m4a" not in record_save_type.lower() else "m4a"
-                                        name_format = "_%03d" if split_video_by_time else ""
-                                        save_file_path = (f"{full_path}/{anchor_name}_{title_in_name}{now}"
-                                                          f"{name_format}.{extension}")
+                                        if split_video_by_time:
+                                            save_file_path = (
+                                                f"{full_path}/{anchor_name}_{title_in_name}"
+                                                f"%Y-%m-%d_%H-%M-%S.{extension}"
+                                            )
+                                        else:
+                                            save_file_path = (
+                                                f"{full_path}/{anchor_name}_{title_in_name}{now}.{extension}"
+                                            )
 
                                         if split_video_by_time:
                                             print(f'\r{anchor_name} 准备开始录制音频: {save_file_path}')
@@ -1688,6 +1694,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     "-c:a", "libmp3lame",
                                                     "-ab", "320k",
                                                     "-f", "segment",
+                                                    "-strftime", "1",
                                                     "-segment_time", split_time,
                                                     "-reset_timestamps", "1",
                                                     save_file_path,
@@ -1699,6 +1706,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     "-bsf:a", "aac_adtstoasc",
                                                     "-ab", "320k",
                                                     "-f", "segment",
+                                                    "-strftime", "1",
                                                     "-segment_time", split_time,
                                                     "-segment_format", 'mpegts',
                                                     "-reset_timestamps", "1",
@@ -1797,13 +1805,14 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         if split_video_by_time:
                                             now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.flv"
+                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.flv"
                                             command = [
                                                 "-map", "0",
                                                 "-c:v", "copy",
                                                 "-c:a", "copy",
                                                 "-bsf:a", "aac_adtstoasc",
                                                 "-f", "segment",
+                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", "flv",
                                                 "-reset_timestamps", "1",
@@ -1871,13 +1880,14 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         if split_video_by_time:
                                             now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.mkv"
+                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.mkv"
                                             command = [
                                                 "-flags", "global_header",
                                                 "-c:v", "copy",
                                                 "-c:a", "aac",
                                                 "-map", "0",
                                                 "-f", "segment",
+                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", "matroska",
                                                 "-reset_timestamps", "1",
@@ -1919,12 +1929,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         if split_video_by_time:
                                             now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.mp4"
+                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.mp4"
                                             command = [
                                                 "-c:v", "copy",
                                                 "-c:a", "aac",
                                                 "-map", "0",
                                                 "-f", "segment",
+                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", "mp4",
                                                 "-reset_timestamps", "1",
@@ -1965,12 +1976,13 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         print(f'{rec_info}/{filename}')
 
                                         try:
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.ts"
+                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.ts"
                                             command = [
                                                 "-c:v", "copy",
                                                 "-c:a", "copy",
                                                 "-map", "0",
                                                 "-f", "segment",
+                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", 'mpegts',
                                                 "-reset_timestamps", "1",
