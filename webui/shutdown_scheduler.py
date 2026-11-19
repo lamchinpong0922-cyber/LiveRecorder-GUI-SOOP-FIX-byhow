@@ -1,4 +1,4 @@
-
+﻿
 from __future__ import annotations
 
 import json
@@ -225,8 +225,10 @@ class ShutdownScheduler:
             if event.is_set():
                 return
 
+            mode = self.state.get("mode", "once")
+
             self.state.update({
-                "enabled": False,
+                "enabled": mode == "daily",
                 "nextRun": None,
                 "phase": "stopping",
                 "remaining": 0,
@@ -278,3 +280,4 @@ class ShutdownScheduler:
 
         if callback is not None and not event.is_set():
             callback()
+
