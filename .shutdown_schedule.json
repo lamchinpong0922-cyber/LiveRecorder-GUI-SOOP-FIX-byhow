@@ -1,10 +1,10 @@
 {
-  "enabled": false,
+  "enabled": true,
   "mode": "daily",
-  "time": "18:26",
-  "nextRun": null,
-  "phase": "idle",
+  "time": "15:30",
+  "nextRun": "2026-11-20T15:30:00",
+  "phase": "scheduled",
   "remaining": 0,
-  "message": "排程尚未啟用，請重新設定",
+  "message": "定時關閉程式已啟用",
   "conversionStatus": "IDLE"
 }
