@@ -1,7 +1,7 @@
 {
-  "enabled": false,
-  "mode": "once",
-  "time": "12:20",
+  "enabled": true,
+  "mode": "daily",
+  "time": "12:29",
   "nextRun": null,
   "phase": "completed",
   "remaining": 0,
