@@ -1,9 +1,10 @@
 {
   "enabled": true,
   "mode": "daily",
-  "time": "12:52",
+  "time": "13:05",
   "nextRun": null,
   "phase": "completed",
   "remaining": 0,
-  "message": "錄製核心已結束，正在關閉 LiveRecorder"
+  "message": "轉檔工作已完成，共處理 0 個項目，正在關閉 LiveRecorder",
+  "conversionStatus": "SUCCESS"
 }
