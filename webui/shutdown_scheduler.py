@@ -271,15 +271,25 @@ class ShutdownScheduler:
             return
 
     def _write_shutdown_log(self, message: str) -> None:
-        """Append scheduler and conversion results to the shutdown log."""
+        """Append scheduler/conversion log; retry a secondary location if needed."""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"[{timestamp}] {message}\\n"
+        primary = Path(r"O:\\userssss\\WIN11\\TEMP") / "LiveRecorder_Shutdown.log"
+        fallback = Path(__file__).resolve().parent / "LiveRecorder_Shutdown_Fallback.log"
+
+        for log_file in (primary, fallback):
+            try:
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with log_file.open("a", encoding="utf-8") as stream:
+                    stream.write(line)
+                return
+            except Exception:
+                continue
+
+        # Last resort: surface logging failure to the process console.
         try:
-            log_file = Path(r"O:\userssss\WIN11\TEMP") / "LiveRecorder_Shutdown.log"
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with log_file.open("a", encoding="utf-8") as stream:
-                stream.write(f"[{timestamp}] {message}\n")
+            print(f"[SHUTDOWN LOG FAILURE] {line.rstrip()}", flush=True)
         except Exception:
-            # Logging must never prevent the original shutdown flow.
             pass
     def _trigger(self, event: threading.Event) -> None:
         with self.lock:
