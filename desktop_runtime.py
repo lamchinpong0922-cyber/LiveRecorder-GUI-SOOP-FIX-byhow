@@ -1,3 +1,4 @@
+
 """Run the React desktop UI in a native WebView2 window."""
 
 from __future__ import annotations
@@ -75,6 +76,8 @@ def save_window_size(
         _write_window_state_error(
             f"save_window_size failed: {type(exc).__name__}: {exc}"
         )
+
+
 class DesktopTraySession:
     def __init__(self, window: Any, active: Callable[[], bool]) -> None:
         self._window = window
@@ -105,7 +108,6 @@ class DesktopTraySession:
 
         self._exiting.set()
         self._window.destroy()
-
 
     def on_closing(self) -> bool:
         if self._active():
@@ -235,6 +237,12 @@ def run_desktop() -> None:
         window.events.closing += session.on_closing
         window.events.resized += lambda width=None, height=None, *_: save_window_size(window, width, height)
         session.start()
+
+        # 排程到期後，使用桌面版的正常關閉流程退出視窗。
+        recorder_server.SHUTDOWN_SCHEDULER.exit_program = session.exit_app
+
+        # 恢復已儲存的每日排程。
+        recorder_server.SHUTDOWN_SCHEDULER.start_restored_schedule()
 
         if "--minimize-after-5" in sys.argv:
             def schedule_minimize():
