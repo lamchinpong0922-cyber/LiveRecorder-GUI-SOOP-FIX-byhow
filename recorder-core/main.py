@@ -644,6 +644,78 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
 
 
 
+def create_segment_temp_dir() -> str:
+    """
+    建立只含 ASCII 檔名的暫存目錄，避免 FFmpeg strftime 在 Windows
+    對 Unicode 輸出路徑解析失敗。
+    """
+    temp_root = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        ".segment_tmp"
+    )
+    os.makedirs(temp_root, exist_ok=True)
+    temp_dir = os.path.join(temp_root, uuid.uuid4().hex)
+    os.makedirs(temp_dir, exist_ok=False)
+    return temp_dir
+
+
+def finalize_segment_outputs(
+    temp_dir: str,
+    final_dir: str,
+    final_prefix: str
+) -> list[str]:
+    """
+    FFmpeg 完整結束後，將 ASCII 暫存檔搬到原本的 Unicode 目錄。
+    檔名中的時間由 FFmpeg 在每段實際開始時產生。
+    """
+    moved_files = []
+    if not temp_dir or not os.path.isdir(temp_dir):
+        return moved_files
+
+    os.makedirs(final_dir, exist_ok=True)
+    pattern = re.compile(
+        r"^segment_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.([A-Za-z0-9]+)$"
+    )
+
+    for filename in sorted(os.listdir(temp_dir)):
+        match = pattern.fullmatch(filename)
+        if not match:
+            continue
+
+        timestamp, extension = match.groups()
+        target_path = os.path.join(
+            final_dir, f"{final_prefix}{timestamp}.{extension}"
+        )
+
+        if os.path.exists(target_path):
+            base, ext = os.path.splitext(target_path)
+            suffix = 1
+            while os.path.exists(f"{base}_{suffix:03d}{ext}"):
+                suffix += 1
+            target_path = f"{base}_{suffix:03d}{ext}"
+
+        source_path = os.path.join(temp_dir, filename)
+        try:
+            shutil.move(source_path, target_path)
+            moved_files.append(target_path)
+            logger.info(f"分段檔案完成命名：{target_path}")
+        except Exception as e:
+            logger.error(
+                f"分段檔案搬移失敗，暫存檔保留：{source_path}，錯誤：{e}"
+            )
+
+    try:
+        if not os.listdir(temp_dir):
+            os.rmdir(temp_dir)
+            parent_dir = os.path.dirname(temp_dir)
+            if os.path.isdir(parent_dir) and not os.listdir(parent_dir):
+                os.rmdir(parent_dir)
+    except OSError as e:
+        logger.warning(f"清理分段暫存目錄失敗：{temp_dir}，{e}")
+
+    return moved_files
+
+
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
                      script_command: str | None = None,
                      segment_temp_dir: str | None = None,
