@@ -1,9 +1,9 @@
 {
   "enabled": false,
   "mode": "once",
-  "time": "03:00",
+  "time": "12:20",
   "nextRun": null,
-  "phase": "cancelled",
+  "phase": "completed",
   "remaining": 0,
-  "message": "定時關機已取消"
+  "message": "錄製核心已結束，正在關閉 LiveRecorder"
 }
