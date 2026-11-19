@@ -1,4 +1,4 @@
-﻿
+
 from __future__ import annotations
 
 import json
@@ -35,6 +35,7 @@ class ShutdownScheduler:
             "phase": "idle",
             "remaining": 0,
             "message": "",
+            "conversionStatus": "IDLE",
         }
 
         self._load()
@@ -90,6 +91,7 @@ class ShutdownScheduler:
                 "phase": "scheduled",
                 "remaining": 0,
                 "message": "每日定時關閉已恢復",
+                "conversionStatus": "IDLE",
             })
         else:
             self.state.update({
@@ -98,6 +100,7 @@ class ShutdownScheduler:
                 "phase": "idle",
                 "remaining": 0,
                 "message": "排程尚未啟用，請重新設定",
+                "conversionStatus": "IDLE",
             })
 
         self._save()
@@ -191,6 +194,7 @@ class ShutdownScheduler:
                 "phase": "scheduled",
                 "remaining": 0,
                 "message": "定時關閉程式已啟用",
+                "conversionStatus": "IDLE",
             }
 
             self._save()
@@ -209,6 +213,7 @@ class ShutdownScheduler:
                 "phase": "cancelled",
                 "remaining": 0,
                 "message": "定時關閉程式已取消",
+                "conversionStatus": "IDLE",
             })
 
             self._save()
@@ -277,13 +282,29 @@ class ShutdownScheduler:
                 "nextRun": None,
                 "phase": "stopping",
                 "remaining": 0,
-                "message": "時間已到，正在停止錄製並關閉程式",
+                "conversionStatus": "PENDING",
+                "message": "時間已到，正在停止錄製並等待轉檔完成",
             })
 
             self._save()
 
         if event.is_set():
             return
+
+        # 清除上一次停止留下的結果，避免誤把舊結果當成本次完成訊號。
+        result_file = self.stop_sentinel.parent / ".stop_all_result.json"
+        result_file_ready = True
+
+        try:
+            result_file.unlink(missing_ok=True)
+        except OSError:
+            result_file_ready = False
+
+        process_before_stop = self.get_process()
+        had_running_process = (
+            process_before_stop is not None
+            and process_before_stop.poll() is None
+        )
 
         try:
             stop_ok, stop_message = self.stop_recorder()
@@ -315,10 +336,45 @@ class ShutdownScheduler:
         if event.is_set():
             return
 
+        # 核心只會在所有錄影工作執行緒結束後寫入此結果檔。
+        # 停止全部路徑的 MP4 轉檔是同步執行，因此核心退出代表轉檔工作已結束。
+        conversion_status = "SUCCESS"
+        conversion_message = "轉檔工作已完成"
+
+        if had_running_process:
+            if not result_file_ready:
+                conversion_status = "FAILED"
+                conversion_message = "核心已結束，但無法清除舊轉檔結果，無法確認本次結果"
+            else:
+                try:
+                    summary = json.loads(result_file.read_text(encoding="utf-8"))
+                    items = summary.get("items")
+                    failed = summary.get("failed")
+                    completed_at = summary.get("completed_at")
+
+                    if (
+                        not isinstance(items, list)
+                        or not isinstance(failed, list)
+                        or not isinstance(completed_at, (int, float))
+                    ):
+                        raise ValueError("轉檔完成資料格式不完整")
+
+                    if summary.get("ok") is True and not failed:
+                        conversion_status = "SUCCESS"
+                        conversion_message = f"轉檔工作已完成，共處理 {len(items)} 個項目"
+                    else:
+                        conversion_status = "FAILED"
+                        conversion_message = f"轉檔工作已結束，但有 {len(failed)} 個失敗項目"
+
+                except Exception as exc:
+                    conversion_status = "FAILED"
+                    conversion_message = f"核心已退出，但無法確認轉檔結果：{exc}"
+
         self._update(
             phase="completed",
             remaining=0,
-            message="錄製核心已結束，正在關閉 LiveRecorder",
+            conversionStatus=conversion_status,
+            message=f"{conversion_message}，正在關閉 LiveRecorder",
         )
 
         callback = self.exit_program
