@@ -292,7 +292,7 @@ export default function RecorderApp() {
 
 
   async function copyLogs() {
-    const text = visibleLogs.map((line) => `[${line.time}] [${line.level}] ${line.text}`).join("\\n")
+    const text = visibleLogs.map((line) => `[${line.time}] [${line.level}] ${line.text}`).join("\n")
     try {
       await navigator.clipboard.writeText(text)
       announce(language === "en" ? "Logs copied" : "日誌已複製")
