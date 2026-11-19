@@ -58,27 +58,45 @@ class ShutdownScheduler:
             if isinstance(data, dict):
                 mode = data.get("mode", "once")
                 value = data.get("time", "03:00")
+                enabled = data.get("enabled") is True
 
                 if mode in ("once", "daily"):
                     self.state["mode"] = mode
 
                 try:
                     hour, minute = map(int, value.split(":"))
+
                     if 0 <= hour <= 23 and 0 <= minute <= 59:
                         self.state["time"] = value
                 except (ValueError, AttributeError):
                     pass
 
+                if mode == "daily" and enabled:
+                    self.state["enabled"] = True
+
         except (OSError, ValueError, TypeError):
             pass
 
-        self.state.update({
-            "enabled": False,
-            "nextRun": None,
-            "phase": "idle",
-            "remaining": 0,
-            "message": "排程尚未啟用，請重新設定",
-        })
+        if self.state["enabled"]:
+            target = self._next_daily(
+                self.state["time"],
+                datetime.now(),
+            )
+
+            self.state.update({
+                "nextRun": target.isoformat(timespec="seconds"),
+                "phase": "scheduled",
+                "remaining": 0,
+                "message": "每日定時關閉已恢復",
+            })
+        else:
+            self.state.update({
+                "enabled": False,
+                "nextRun": None,
+                "phase": "idle",
+                "remaining": 0,
+                "message": "排程尚未啟用，請重新設定",
+            })
 
         self._save()
 
@@ -280,4 +298,3 @@ class ShutdownScheduler:
 
         if callback is not None and not event.is_set():
             callback()
-
