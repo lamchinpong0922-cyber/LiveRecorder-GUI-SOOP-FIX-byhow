@@ -1,17 +1,6 @@
 {
   "ok": true,
-  "items": [
-    {
-      "path": "O:/userssss/WIN11/DOWNLOAD/LiveRecorder-GUI-SOOP-FIX-byhow-GIT/recorder-core/downloads/SOOP/[6월]유월이-suji0624\\[6월]유월이-suji0624_슬립만_입은_나_2026-11-19_01-35-35_000.ts",
-      "success": true,
-      "error": ""
-    },
-    {
-      "path": "O:/userssss/WIN11/DOWNLOAD/LiveRecorder-GUI-SOOP-FIX-byhow-GIT/recorder-core/downloads/SOOP/[6월]유월이-suji0624\\[6월]유월이-suji0624_슬립만_입은_나_2026-11-19_01-35-35_001.ts",
-      "success": true,
-      "error": ""
-    }
-  ],
+  "items": [],
   "failed": [],
-  "completed_at": 1795028484.729324
+  "completed_at": 1795061808.6240492
 }
