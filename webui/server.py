@@ -997,6 +997,9 @@ def main() -> None:
         raise
     address = f"http://127.0.0.1:{port}/"
     stopped = threading.Event()
+
+    SHUTDOWN_SCHEDULER.exit_program = stopped.set
+
     server_errors: list[BaseException] = []
 
     def serve() -> None:
