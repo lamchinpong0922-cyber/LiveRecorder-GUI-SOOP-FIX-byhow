@@ -2,9 +2,9 @@
   "enabled": true,
   "mode": "daily",
   "time": "13:05",
-  "nextRun": null,
-  "phase": "completed",
+  "nextRun": "2026-11-20T13:05:00",
+  "phase": "scheduled",
   "remaining": 0,
-  "message": "轉檔工作已完成，共處理 0 個項目，正在關閉 LiveRecorder",
-  "conversionStatus": "SUCCESS"
+  "message": "每日定時關閉已恢復",
+  "conversionStatus": "IDLE"
 }

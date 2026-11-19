@@ -270,6 +270,17 @@ class ShutdownScheduler:
             self._trigger(event)
             return
 
+    def _write_shutdown_log(self, message: str) -> None:
+        """Append scheduler and conversion results to the shutdown log."""
+        try:
+            log_file = Path(r"O:\userssss\WIN11\TEMP") / "LiveRecorder_Shutdown.log"
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with log_file.open("a", encoding="utf-8") as stream:
+                stream.write(f"[{timestamp}] {message}\n")
+        except Exception:
+            # Logging must never prevent the original shutdown flow.
+            pass
     def _trigger(self, event: threading.Event) -> None:
         with self.lock:
             if event.is_set():
@@ -291,14 +302,19 @@ class ShutdownScheduler:
         if event.is_set():
             return
 
-        # 清除上一次停止留下的結果，避免誤把舊結果當成本次完成訊號。
+        self._write_shutdown_log("=" * 55)
+        self._write_shutdown_log("排程時間到，開始執行關閉流程")
+        self._write_shutdown_log(f"排程模式：{mode}")
+
         result_file = self.stop_sentinel.parent / ".stop_all_result.json"
         result_file_ready = True
 
         try:
             result_file.unlink(missing_ok=True)
-        except OSError:
+            self._write_shutdown_log("已清除上一次的轉檔結果，準備記錄本次結果")
+        except OSError as exc:
             result_file_ready = False
+            self._write_shutdown_log(f"警告：無法清除舊轉檔結果：{exc}")
 
         process_before_stop = self.get_process()
         had_running_process = (
@@ -306,69 +322,149 @@ class ShutdownScheduler:
             and process_before_stop.poll() is None
         )
 
+        self._write_shutdown_log(
+            f"停止前核心狀態：{'RUNNING' if had_running_process else 'NOT_RUNNING'}"
+        )
+
         try:
             stop_ok, stop_message = self.stop_recorder()
+            self._write_shutdown_log(
+                f"停止錄影指令：{'SUCCESS' if stop_ok else 'FAILED'}；{stop_message}"
+            )
 
             if not stop_ok:
                 process = self.get_process()
 
                 if process is not None and process.poll() is None:
+                    self._write_shutdown_log("停止錄影失敗，核心仍在執行，取消關閉")
                     self._update(
                         phase="error",
                         message=f"停止錄製失敗：{stop_message}",
+                        conversionStatus="UNKNOWN",
                     )
                     return
 
         except Exception as exc:
+            self._write_shutdown_log(f"停止錄影發生例外：{type(exc).__name__}: {exc}")
             self._update(
                 phase="error",
                 message=f"停止錄製失敗：{exc}",
+                conversionStatus="UNKNOWN",
             )
             return
 
         process = self.get_process()
 
         if process is not None:
+            self._write_shutdown_log("開始等待錄影核心退出")
             while process.poll() is None:
                 if event.wait(1):
+                    self._write_shutdown_log("排程等待被取消，停止關閉流程")
                     return
+            self._write_shutdown_log("錄影核心已退出")
 
         if event.is_set():
+            self._write_shutdown_log("排程已取消，不繼續關閉")
             return
 
-        # 核心只會在所有錄影工作執行緒結束後寫入此結果檔。
-        # 停止全部路徑的 MP4 轉檔是同步執行，因此核心退出代表轉檔工作已結束。
         conversion_status = "SUCCESS"
-        conversion_message = "轉檔工作已完成"
+        conversion_message = "沒有待處理的轉檔工作"
+        items = []
+        failed = []
 
         if had_running_process:
             if not result_file_ready:
-                conversion_status = "FAILED"
-                conversion_message = "核心已結束，但無法清除舊轉檔結果，無法確認本次結果"
+                conversion_status = "UNKNOWN"
+                conversion_message = "無法清除舊結果，不能確認本次轉檔結果"
             else:
                 try:
-                    summary = json.loads(result_file.read_text(encoding="utf-8"))
+                    summary = json.loads(
+                        result_file.read_text(encoding="utf-8")
+                    )
+
+                    if not isinstance(summary, dict):
+                        raise ValueError("結果檔不是有效物件")
+
                     items = summary.get("items")
-                    failed = summary.get("failed")
                     completed_at = summary.get("completed_at")
 
-                    if (
-                        not isinstance(items, list)
-                        or not isinstance(failed, list)
-                        or not isinstance(completed_at, (int, float))
-                    ):
-                        raise ValueError("轉檔完成資料格式不完整")
+                    if not isinstance(items, list):
+                        raise ValueError("缺少有效的 items 清單")
 
-                    if summary.get("ok") is True and not failed:
-                        conversion_status = "SUCCESS"
-                        conversion_message = f"轉檔工作已完成，共處理 {len(items)} 個項目"
-                    else:
+                    if not isinstance(completed_at, (int, float)):
+                        raise ValueError("缺少有效的 completed_at 完成時間")
+
+                    for index, item in enumerate(items, start=1):
+                        if not isinstance(item, dict):
+                            raise ValueError(f"第 {index} 個轉檔項目格式錯誤")
+
+                        if not isinstance(item.get("success"), bool):
+                            raise ValueError(f"第 {index} 個轉檔項目缺少 success 狀態")
+
+                        path = str(item.get("path", "未提供檔名"))
+                        success = item["success"]
+                        error = str(item.get("error", "") or "")
+
+                        if success:
+                            self._write_shutdown_log(
+                                f"轉檔成功：{path}"
+                            )
+                        else:
+                            failed.append(item)
+                            self._write_shutdown_log(
+                                f"轉檔失敗：{path}；原因：{error or '未提供錯誤原因'}"
+                            )
+
+                    # 以逐項結果為準，不只相信摘要中的 ok 欄位。
+                    if failed:
                         conversion_status = "FAILED"
-                        conversion_message = f"轉檔工作已結束，但有 {len(failed)} 個失敗項目"
+                        conversion_message = (
+                            f"轉檔工作已全部結束，但有 {len(failed)} 個失敗項目"
+                        )
+                    else:
+                        conversion_status = "SUCCESS"
+                        conversion_message = (
+                            f"所有轉檔工作已結束，共 {len(items)} 個項目"
+                        )
+
+                    if summary.get("ok") is not (not failed):
+                        self._write_shutdown_log(
+                            "警告：結果摘要 ok 欄位與逐項結果不一致，以逐項結果為準"
+                        )
+
+                    completed_time = datetime.fromtimestamp(completed_at).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    self._write_shutdown_log(
+                        f"核心轉檔結果完成時間：{completed_time}"
+                    )
 
                 except Exception as exc:
-                    conversion_status = "FAILED"
-                    conversion_message = f"核心已退出，但無法確認轉檔結果：{exc}"
+                    conversion_status = "UNKNOWN"
+                    conversion_message = f"無法確認完整轉檔結果：{exc}"
+                    self._write_shutdown_log(
+                        f"轉檔結果核對失敗：{type(exc).__name__}: {exc}"
+                    )
+
+        success_count = sum(
+            1 for item in items
+            if isinstance(item, dict) and item.get("success") is True
+        )
+        failed_count = len(failed)
+
+        self._write_shutdown_log(
+            f"轉檔總數：{len(items)}；成功：{success_count}；失敗：{failed_count}"
+        )
+        self._write_shutdown_log(
+            f"轉檔最終狀態：{conversion_status}"
+        )
+
+        if conversion_status == "SUCCESS":
+            self._write_shutdown_log("確認：所有轉檔工作均已結束")
+        elif conversion_status == "FAILED":
+            self._write_shutdown_log("確認：轉檔工作均已結束，但有失敗項目")
+        else:
+            self._write_shutdown_log("警告：無法確認所有轉檔工作結果")
 
         self._update(
             phase="completed",
@@ -380,4 +476,7 @@ class ShutdownScheduler:
         callback = self.exit_program
 
         if callback is not None and not event.is_set():
+            self._write_shutdown_log("開始關閉 LiveRecorder 桌面程式")
             callback()
+        else:
+            self._write_shutdown_log("沒有可用的程式退出 callback，未執行視窗關閉")
