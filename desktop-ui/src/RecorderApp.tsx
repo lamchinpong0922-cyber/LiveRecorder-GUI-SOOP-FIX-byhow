@@ -11,6 +11,7 @@ import {
 
 import {
   CircleHelp,
+  Copy,
   ExternalLink,
   FolderOpen,
   Moon,
@@ -287,6 +288,17 @@ export default function RecorderApp() {
         current === message ? "" : current
       )
     }, 4200)
+  }
+
+
+  async function copyLogs() {
+    const text = visibleLogs.map((line) => `[${line.time}] [${line.level}] ${line.text}`).join("\\n")
+    try {
+      await navigator.clipboard.writeText(text)
+      announce(language === "en" ? "Logs copied" : "日誌已複製")
+    } catch {
+      announce(language === "en" ? "Copy failed. Select log text manually." : "複製失敗，請手動選取日誌")
+    }
   }
 
 
@@ -1419,6 +1431,16 @@ export default function RecorderApp() {
             />
             {t("autoScroll")}
           </label>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={copyLogs}
+            disabled={visibleLogs.length === 0}
+          >
+            <Copy className="size-3.5" />
+            {language === "en" ? "Copy logs" : "複製日誌"}
+          </Button>
 
           <Button
             variant="ghost"
