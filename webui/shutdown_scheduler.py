@@ -273,7 +273,7 @@ class ShutdownScheduler:
     def _write_shutdown_log(self, message: str) -> None:
         """Append scheduler/conversion log; retry a secondary location if needed."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{timestamp}] {message}\\n"
+        line = f"[{timestamp}] {message}\n"
         primary = Path(r"O:\\userssss\\WIN11\\TEMP") / "LiveRecorder_Shutdown.log"
         fallback = Path(__file__).resolve().parent / "LiveRecorder_Shutdown_Fallback.log"
 
