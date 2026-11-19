@@ -645,7 +645,10 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
 
 
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
-                     script_command: str | None = None) -> bool:
+                     script_command: str | None = None,
+                     segment_temp_dir: str | None = None,
+                     segment_final_dir: str | None = None,
+                     segment_final_prefix: str | None = None) -> bool:
     save_file_path = ffmpeg_command[-1]
 
     process = subprocess.Popen(
@@ -720,6 +723,26 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
 
+    # FFmpeg 已完全結束，現在才搬移分段檔，避免搬動仍在寫入的檔案。
+    segment_files = []
+    if segment_temp_dir:
+        try:
+            segment_files = finalize_segment_outputs(
+                segment_temp_dir,
+                segment_final_dir or os.path.dirname(save_file_path),
+                segment_final_prefix or ""
+            )
+            if segment_files:
+                save_file_path = segment_files[0]
+            else:
+                logger.warning(
+                    f"[{record_name}]FFmpeg 結束後沒有找到可搬移的分段檔：{segment_temp_dir}"
+                )
+        except Exception as e:
+            logger.error(
+                f"[{record_name}]分段檔案整理失敗，暫存目錄保留：{segment_temp_dir}，{e}"
+            )
+
     conversion_failed = False
     conversion_attempted = False
 
@@ -730,17 +753,9 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         if stop_all_requested:
             try:
                 if split_video_by_time:
-                    file_paths = utils.get_file_paths(
-                        os.path.dirname(save_file_path)
-                    )
-
-                    prefix = os.path.basename(save_file_path).rsplit(
-                        '_', maxsplit=1
-                    )[0]
-
                     ts_files = [
-                        path for path in file_paths
-                        if prefix in path and path.lower().endswith('.ts')
+                        path for path in segment_files
+                        if path.lower().endswith('.ts')
                     ]
 
                     if not ts_files:
@@ -811,17 +826,9 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             # 一般錄影完成後的自動轉檔，維持原本行為
             try:
                 if split_video_by_time:
-                    file_paths = utils.get_file_paths(
-                        os.path.dirname(save_file_path)
-                    )
-
-                    prefix = os.path.basename(save_file_path).rsplit(
-                        '_', maxsplit=1
-                    )[0]
-
                     ts_files = [
-                        path for path in file_paths
-                        if prefix in path and path.lower().endswith('.ts')
+                        path for path in segment_files
+                        if path.lower().endswith('.ts')
                     ]
 
                     for path in ts_files:
@@ -1664,6 +1671,9 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     only_audio_record = True
 
                                 record_save_type = video_save_type
+                                segment_temp_dir = None
+                                segment_final_dir = full_path
+                                segment_final_prefix = f"{anchor_name}_{title_in_name}"
 
                                 if is_flv_preferred_platform(record_url) and port_info.get('flv_url'):
                                     codec = utils.get_query_params(port_info['flv_url'], "codec")
@@ -1676,9 +1686,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
                                         extension = "mp3" if "m4a" not in record_save_type.lower() else "m4a"
                                         if split_video_by_time:
-                                            save_file_path = (
-                                                f"{full_path}/{anchor_name}_{title_in_name}"
-                                                f"%Y-%m-%d_%H-%M-%S.{extension}"
+                                            segment_temp_dir = create_segment_temp_dir()
+                                            save_file_path = os.path.join(
+                                                segment_temp_dir,
+                                                f"segment_%Y-%m-%d_%H-%M-%S.{extension}"
                                             )
                                         else:
                                             save_file_path = (
@@ -1694,7 +1705,6 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     "-c:a", "libmp3lame",
                                                     "-ab", "320k",
                                                     "-f", "segment",
-                                                    "-strftime", "1",
                                                     "-segment_time", split_time,
                                                     "-reset_timestamps", "1",
                                                     save_file_path,
@@ -1706,7 +1716,6 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                     "-bsf:a", "aac_adtstoasc",
                                                     "-ab", "320k",
                                                     "-f", "segment",
-                                                    "-strftime", "1",
                                                     "-segment_time", split_time,
                                                     "-segment_format", 'mpegts',
                                                     "-reset_timestamps", "1",
@@ -1738,7 +1747,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            segment_temp_dir=segment_temp_dir,
+                                            segment_final_dir=segment_final_dir,
+                                            segment_final_prefix=segment_final_prefix
                                         )
                                         if comment_end:
                                             return
@@ -1805,14 +1817,17 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         if split_video_by_time:
                                             now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.flv"
+                                            segment_temp_dir = create_segment_temp_dir()
+                                            save_file_path = os.path.join(
+                                                segment_temp_dir,
+                                                "segment_%Y-%m-%d_%H-%M-%S.flv"
+                                            )
                                             command = [
                                                 "-map", "0",
                                                 "-c:v", "copy",
                                                 "-c:a", "copy",
                                                 "-bsf:a", "aac_adtstoasc",
                                                 "-f", "segment",
-                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", "flv",
                                                 "-reset_timestamps", "1",
@@ -1835,7 +1850,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            segment_temp_dir=segment_temp_dir,
+                                            segment_final_dir=segment_final_dir,
+                                            segment_final_prefix=segment_final_prefix
                                         )
                                         if comment_end:
                                             return
@@ -1880,14 +1898,17 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         if split_video_by_time:
                                             now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.mkv"
+                                            segment_temp_dir = create_segment_temp_dir()
+                                            save_file_path = os.path.join(
+                                                segment_temp_dir,
+                                                "segment_%Y-%m-%d_%H-%M-%S.mkv"
+                                            )
                                             command = [
                                                 "-flags", "global_header",
                                                 "-c:v", "copy",
                                                 "-c:a", "aac",
                                                 "-map", "0",
                                                 "-f", "segment",
-                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", "matroska",
                                                 "-reset_timestamps", "1",
@@ -1910,7 +1931,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            segment_temp_dir=segment_temp_dir,
+                                            segment_final_dir=segment_final_dir,
+                                            segment_final_prefix=segment_final_prefix
                                         )
                                         if comment_end:
                                             return
@@ -1929,13 +1953,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     try:
                                         if split_video_by_time:
                                             now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.mp4"
+                                            segment_temp_dir = create_segment_temp_dir()
+                                            save_file_path = os.path.join(
+                                                segment_temp_dir,
+                                                "segment_%Y-%m-%d_%H-%M-%S.mp4"
+                                            )
                                             command = [
                                                 "-c:v", "copy",
                                                 "-c:a", "aac",
                                                 "-map", "0",
                                                 "-f", "segment",
-                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", "mp4",
                                                 "-reset_timestamps", "1",
@@ -1958,7 +1985,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             record_url,
                                             ffmpeg_command,
                                             record_save_type,
-                                            custom_script
+                                            custom_script,
+                                            segment_temp_dir=segment_temp_dir,
+                                            segment_final_dir=segment_final_dir,
+                                            segment_final_prefix=segment_final_prefix
                                         )
                                         if comment_end:
                                             return
@@ -1976,13 +2006,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         print(f'{rec_info}/{filename}')
 
                                         try:
-                                            save_file_path = f"{full_path}/{anchor_name}_{title_in_name}%Y-%m-%d_%H-%M-%S.ts"
+                                            segment_temp_dir = create_segment_temp_dir()
+                                            save_file_path = os.path.join(
+                                                segment_temp_dir,
+                                                "segment_%Y-%m-%d_%H-%M-%S.ts"
+                                            )
                                             command = [
                                                 "-c:v", "copy",
                                                 "-c:a", "copy",
                                                 "-map", "0",
                                                 "-f", "segment",
-                                                    "-strftime", "1",
                                                 "-segment_time", split_time,
                                                 "-segment_format", 'mpegts',
                                                 "-reset_timestamps", "1",
@@ -1995,7 +2028,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 record_url,
                                                 ffmpeg_command,
                                                 record_save_type,
-                                                custom_script
+                                                custom_script,
+                                                segment_temp_dir=segment_temp_dir,
+                                                segment_final_dir=segment_final_dir,
+                                                segment_final_prefix=segment_final_prefix
                                             )
                                             if comment_end:
                                                 return
@@ -2027,7 +2063,10 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 record_url,
                                                 ffmpeg_command,
                                                 record_save_type,
-                                                custom_script
+                                                custom_script,
+                                                segment_temp_dir=segment_temp_dir,
+                                                segment_final_dir=segment_final_dir,
+                                                segment_final_prefix=segment_final_prefix
                                             )
                                             if comment_end:
                                                 # 一般單間停止且沒有啟用自動轉檔時，保留原本的轉檔行為。
