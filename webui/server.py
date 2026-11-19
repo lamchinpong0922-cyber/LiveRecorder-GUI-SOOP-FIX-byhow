@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import errno
@@ -289,6 +290,7 @@ def active_recording_room_urls() -> list[str]:
 
     return sorted(urls)
 
+
 class Recorder:
     def __init__(self) -> None:
         self.process: subprocess.Popen[str] | None = None
@@ -533,7 +535,6 @@ class Recorder:
         self.windows_job = None
 
         self.append("本專案程序清理完成", "success")
-
 
 
 RECORDER = Recorder()
@@ -974,13 +975,13 @@ def create_server(port: int, *, auto_start: bool = True) -> ThreadingHTTPServer:
 
 
 def close_server(server: ThreadingHTTPServer) -> None:
-    # 真正結束程式時，先停止定時關機排程。
-    # 避免排程執行緒在 GUI 退出後繼續執行關機指令。
+    # 程式退出時停止排程監控，但保留每日排程設定。
     SHUTDOWN_SCHEDULER.stop()
 
-    # 停止 HTTP 服務，再等待核心完成錄製收尾及 MP4 轉檔。
+    # 停止 HTTP 服務，再等待核心完成原有收尾流程。
     server.server_close()
     RECORDER.close()
+
 
 def main() -> None:
     from tray_runtime import TrayController
@@ -995,10 +996,12 @@ def main() -> None:
                 "請確認舊服務是否仍在錄製；安全停止後再重新啟動新版。"
             ) from None
         raise
+
     address = f"http://127.0.0.1:{port}/"
     stopped = threading.Event()
 
     SHUTDOWN_SCHEDULER.exit_program = stopped.set
+    SHUTDOWN_SCHEDULER.start_restored_schedule()
 
     server_errors: list[BaseException] = []
 
@@ -1013,6 +1016,7 @@ def main() -> None:
     worker = threading.Thread(target=serve, name="web-ui-http", daemon=True)
     worker.start()
     tray: TrayController | None = None
+
     try:
         tray = TrayController(
             open_ui=lambda: webbrowser.open(address),
@@ -1023,19 +1027,26 @@ def main() -> None:
         )
         tray.start_background()
         print(f"LiveRecorder Web UI：{address}")
+
         if os.environ.get("LIVE_RECORDER_NO_BROWSER") != "1":
             opener = threading.Timer(0.3, lambda: webbrowser.open(address))
             opener.daemon = True
             opener.start()
+
         stopped.wait()
+
     except KeyboardInterrupt:
         pass
+
     finally:
         server.shutdown()
         worker.join(timeout=3)
+
         if tray is not None:
             tray.stop()
+
         close_server(server)
+
     if server_errors:
         raise RuntimeError("LiveRecorder 網頁服務異常結束") from server_errors[0]
 
