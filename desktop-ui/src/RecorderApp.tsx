@@ -297,11 +297,8 @@ export default function RecorderApp() {
       await navigator.clipboard.writeText(text)
       announce(language === "en" ? "Logs copied" : "日誌已複製")
     } catch {
-<<<<<<< HEAD
       announce(language === "en" ? "Copy failed. Select log text manually." : "複製失敗，請手動選取日誌文字")
-=======
-      announce(language === "en" ? "Copy failed. Select log text manually." : "複製失敗，請手動選取日誌")
->>>>>>> 479ce4bc00342499d089df90c0545af37d37d03e
+
     }
   }
 

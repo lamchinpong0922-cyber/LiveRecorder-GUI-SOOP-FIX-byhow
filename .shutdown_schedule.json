@@ -3,8 +3,8 @@
   "mode": "daily",
   "time": "18:26",
   "nextRun": null,
-  "phase": "cancelled",
+  "phase": "idle",
   "remaining": 0,
-  "message": "定時關閉程式已取消",
+  "message": "排程尚未啟用，請重新設定",
   "conversionStatus": "IDLE"
 }
