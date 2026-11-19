@@ -58,21 +58,23 @@ class ShutdownScheduler:
             if isinstance(data, dict):
                 mode = data.get("mode", "once")
                 value = data.get("time", "03:00")
-                enabled = data.get("enabled") is True
 
                 if mode in ("once", "daily"):
                     self.state["mode"] = mode
 
                 try:
                     hour, minute = map(int, value.split(":"))
-
                     if 0 <= hour <= 23 and 0 <= minute <= 59:
                         self.state["time"] = value
                 except (ValueError, AttributeError):
                     pass
 
-                if mode == "daily" and enabled:
-                    self.state["enabled"] = True
+                # 只有每日排程會在重新啟動後自動恢復。
+                # 單次排程仍維持原本重新啟動後不自動恢復的行為。
+                self.state["enabled"] = (
+                    data.get("enabled") is True
+                    and self.state["mode"] == "daily"
+                )
 
         except (OSError, ValueError, TypeError):
             pass
@@ -124,7 +126,6 @@ class ShutdownScheduler:
         with self.lock:
             old_event = self.cancel_event
             old_thread = self.thread
-
             old_event.set()
 
         if (
@@ -138,6 +139,30 @@ class ShutdownScheduler:
                 raise RuntimeError(
                     "上一個排程執行緒尚未停止，請稍後再試"
                 )
+
+    def _start_thread(self) -> None:
+        with self.lock:
+            if not self.state.get("enabled"):
+                return
+
+            if not self.state.get("nextRun"):
+                return
+
+            self.cancel_event = threading.Event()
+            event = self.cancel_event
+
+            self.thread = threading.Thread(
+                target=self._run,
+                args=(event,),
+                name="LiveRecorderShutdownScheduler",
+                daemon=True,
+            )
+
+            self.thread.start()
+
+    def start_restored_schedule(self) -> None:
+        # 等 main() 設定好 exit_program 後才啟動恢復的排程。
+        self._start_thread()
 
     def set_schedule(self, mode: str, value: str) -> dict:
         if mode not in ("once", "daily"):
@@ -158,9 +183,6 @@ class ShutdownScheduler:
             now = datetime.now()
             target = self._next_daily(value, now)
 
-            self.cancel_event = threading.Event()
-            event = self.cancel_event
-
             self.state = {
                 "enabled": True,
                 "mode": mode,
@@ -173,16 +195,9 @@ class ShutdownScheduler:
 
             self._save()
 
-            self.thread = threading.Thread(
-                target=self._run,
-                args=(event,),
-                name="LiveRecorderShutdownScheduler",
-                daemon=True,
-            )
+        self._start_thread()
 
-            self.thread.start()
-
-            return dict(self.state)
+        return self.get_state()
 
     def cancel(self) -> dict:
         self._stop_old_thread()
@@ -201,7 +216,19 @@ class ShutdownScheduler:
             return dict(self.state)
 
     def stop(self) -> None:
-        self.cancel()
+        # 程式退出時只停止目前的監控執行緒。
+        # 不清除每日排程的 enabled 狀態。
+        with self.lock:
+            event = self.cancel_event
+            thread = self.thread
+            event.set()
+
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=10)
 
     def _update(self, **values) -> None:
         with self.lock:
