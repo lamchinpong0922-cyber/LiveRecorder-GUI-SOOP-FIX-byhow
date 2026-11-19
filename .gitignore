@@ -18,3 +18,5 @@ desktop-ui/dist/
 # Runtime configuration may contain account credentials and cookies.
 recorder-core/config/config.ini
 recorder-core/config/URL_config.ini
+# LiveRecorder temporary segment files
+recorder-core/.segment_tmp/
