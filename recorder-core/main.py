@@ -1045,7 +1045,7 @@ def select_source_url(link, stream_info):
 
 
 def start_record(url_data: tuple, count_variable: int = -1) -> None:
-    global error_count
+    global error_count, sooplive_cookie
 
     while True:
         if is_stop_all_requested():
@@ -1199,8 +1199,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     requested_quality=record_quality_zh
                                 ))
                                 if json_data and json_data.get('new_cookies'):
+                                    # Keep the running recorder's in-memory cookie in sync
+                                    # with config.ini so the next polling cycle uses it too.
+                                    sooplive_cookie = json_data['new_cookies']
                                     utils.update_config(
-                                        config_file, 'Cookie', 'sooplive_cookie', json_data['new_cookies']
+                                        config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
                                     )
                                 port_info = asyncio.run(stream.get_stream_url(json_data, record_quality, spec=True))
                             else:
