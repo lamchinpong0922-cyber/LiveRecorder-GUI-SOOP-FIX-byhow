@@ -145,6 +145,30 @@ def _trace_soop_async_error_decorator(func):
         try:
             return await func(*args, **kwargs)
         except Exception as error:
+            # Preserve a newly issued SOOP cookie even when a later API step fails.
+            # The caller can then persist it before the next monitoring retry.
+            if func.__name__ == 'get_sooplive_stream_data':
+                traceback_node = error.__traceback__
+                refreshed_cookie = None
+                while traceback_node:
+                    frame = traceback_node.tb_frame
+                    local_values = frame.f_locals
+                    frame_name = frame.f_code.co_name
+                    if frame_name == '_get_sooplive_desktop_stream_data':
+                        refreshed_cookie = local_values.get('refreshed_cookie') or refreshed_cookie
+                    elif frame_name == 'get_sooplive_stream_data':
+                        refreshed_cookie = (
+                            local_values.get('desktop_refreshed_cookie')
+                            or local_values.get('new_cookie')
+                            or refreshed_cookie
+                        )
+                    traceback_node = traceback_node.tb_next
+                if refreshed_cookie:
+                    try:
+                        error.new_cookies = refreshed_cookie
+                    except Exception:
+                        pass
+
             # JSON decoding failures already have a response preview from the shared parser.
             if not isinstance(error, json.JSONDecodeError):
                 traceback_items = traceback.extract_tb(error.__traceback__)
@@ -1559,7 +1583,9 @@ async def get_sooplive_stream_data(
         _anchor_name, _broad_no = await get_sooplive_tk(
             url, rtype='info', proxy_addr=proxy_addr, cookies=cookie
         )
-        _view_url_data = await get_sooplive_cdn_url(_broad_no, proxy_addr=proxy_addr)
+        _view_url_data = await get_sooplive_cdn_url(
+            _broad_no, proxy_addr=proxy_addr, cookies=cookie
+        )
         _view_url = _view_url_data['view_url']
         _m3u8_url = _view_url + '?aid=' + aid_token
         result_data = {
@@ -1583,6 +1609,12 @@ async def get_sooplive_stream_data(
         return result
     if watch_code == -3002:
         print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
+        if desktop_refreshed_cookie:
+            # The desktop API has already logged in during this polling cycle.
+            # Do not immediately submit the same account credentials a second time.
+            print("SOOP desktop login already refreshed the cookie in this cycle; "
+                  "preserving it and retrying on the next monitoring cycle.")
+            return result
         print("Attempting to log in to the sooplive live streaming platform with your account and password, "
               "please ensure it is configured.")
         new_cookie = await handle_login()
