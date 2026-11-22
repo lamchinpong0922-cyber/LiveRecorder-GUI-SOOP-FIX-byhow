@@ -10,6 +10,8 @@ Function: Get live stream data.
 """
 
 import hashlib
+import functools
+import traceback
 import random
 import subprocess
 import time
@@ -65,6 +67,19 @@ _SOOP_DESKTOP_DIAGNOSTICS_LOGGED = set()
 _SOOP_DESKTOP_FALLBACK_LOGGED = set()
 _SOOP_DESKTOP_FAILURES_LOGGED = set()
 
+def _mask_soop_sensitive_text(raw_text: str) -> str:
+    """Mask credential-like fields before writing API response previews to logs."""
+    text = str(raw_text or '')
+    patterns = [
+        r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE|ACCESS_TOKEN|AUTHORIZATION)"?\s*[:=]\s*)("[^"\n]*"|[^,}\s]+)',
+        r'(?i)(authorization\s*[:=]\s*)([^\r\n]+)',
+        r'(?i)(cookie\s*[:=]\s*)([^\r\n]+)',
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, r'\1[REDACTED]', text)
+    return text
+
+
 
 def _log_soop_desktop_failure(channel_id: str, stage: str, reason: str, details: str = '') -> None:
     """Log actionable desktop-player failures once without changing fallback behavior."""
@@ -86,7 +101,7 @@ def _parse_soop_json_response(response, stage: str, channel_id: str = '',
         return json.loads(response)
     except json.JSONDecodeError as error:
         raw = response.decode('utf-8', errors='replace') if isinstance(response, bytes) else str(response or '')
-        preview = raw.strip()[:160]
+        preview = _mask_soop_sensitive_text(raw.strip())[:160]
         signature = (stage, status_code, error.msg, raw.strip()[:80])
         if signature not in _SOOP_DESKTOP_DIAGNOSTICS_LOGGED:
             _SOOP_DESKTOP_DIAGNOSTICS_LOGGED.add(signature)
@@ -100,6 +115,16 @@ def _parse_soop_json_response(response, stage: str, channel_id: str = '',
         raise
 
 
+
+def _soop_play_url_list_or_master(play_url_list: List[str], m3u8_url: str) -> List[str]:
+    """Keep SOOP live results compatible with stream.get_stream_url when variant parsing is empty."""
+    valid_urls = [
+        item.strip() for item in (play_url_list or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    return valid_urls or [m3u8_url]
+
+
 def _log_soop_desktop_fallback(channel_id: str) -> None:
     """Log the desktop-to-legacy fallback once per channel to keep multi-recording logs readable."""
     key = str(channel_id or '未知')
@@ -108,6 +133,60 @@ def _log_soop_desktop_fallback(channel_id: str) -> None:
         diagnostic = f'SOOP 新版桌面播放器未取得可用串流，改用舊版播放清單；頻道={key}。'
         print(diagnostic)
         _write_soop_diagnostic(diagnostic)
+
+
+_SOOP_ASYNC_ERRORS_LOGGED = set()
+
+
+def _trace_soop_async_error_decorator(func):
+    """Log SOOP async failures without swallowing them or changing caller retry behavior."""
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as error:
+            # Preserve a newly issued SOOP cookie even when a later API step fails.
+            # The caller can then persist it before the next monitoring retry.
+            if func.__name__ == 'get_sooplive_stream_data':
+                traceback_node = error.__traceback__
+                refreshed_cookie = None
+                while traceback_node:
+                    frame = traceback_node.tb_frame
+                    local_values = frame.f_locals
+                    frame_name = frame.f_code.co_name
+                    if frame_name == '_get_sooplive_desktop_stream_data':
+                        refreshed_cookie = local_values.get('refreshed_cookie') or refreshed_cookie
+                    elif frame_name == 'get_sooplive_stream_data':
+                        refreshed_cookie = (
+                            local_values.get('desktop_refreshed_cookie')
+                            or local_values.get('new_cookie')
+                            or refreshed_cookie
+                        )
+                    traceback_node = traceback_node.tb_next
+                if refreshed_cookie:
+                    try:
+                        error.new_cookies = refreshed_cookie
+                    except Exception:
+                        pass
+
+            # JSON decoding failures already have a response preview from the shared parser.
+            if not isinstance(error, json.JSONDecodeError):
+                traceback_items = traceback.extract_tb(error.__traceback__)
+                error_line = traceback_items[-1].lineno if traceback_items else '未知'
+                safe_error = _mask_soop_sensitive_text(str(error))[:240]
+                signature = (func.__name__, type(error).__name__, safe_error, error_line)
+                if signature not in _SOOP_ASYNC_ERRORS_LOGGED:
+                    _SOOP_ASYNC_ERRORS_LOGGED.add(signature)
+                    diagnostic = (
+                        f'SOOP 非同步函式發生例外（已向上傳遞）：函式={func.__name__}；'
+                        f'錯誤類型={type(error).__name__}；行數={error_line}；'
+                        f'錯誤內容={safe_error}'
+                    )
+                    print(diagnostic)
+                    _write_soop_diagnostic(diagnostic)
+            raise
+
+    return wrapper
 
 
 def get_params(url: str, params: str) -> OptionalStr:
@@ -1005,7 +1084,7 @@ async def login_sooplive(username: str, password: str, proxy_addr: OptionalStr =
         )
 
 
-@trace_error_decorator
+@_trace_soop_async_error_decorator
 async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
@@ -1029,18 +1108,18 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
     # livestream-manager hostname now has a dangling CNAME and cannot resolve.
     url2 = 'https://livestream-manager.sooplive.com/broad_stream_assign.html?' + urllib.parse.urlencode(params)
     status_code, json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, abroad=True, return_status=True)
-    try:
-        json_data = json.loads(json_str)
-    except Exception as error:
-        raw_text = str(json_str or '')
-        safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
-        diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
-              f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
-              f'preview={safe_preview[:700]!r}')
-        print(diagnostic)
-        _write_soop_diagnostic(diagnostic)
-        raise
-
+    json_data = _parse_soop_json_response(
+        json_str, 'legacy_stream_manager', str(broad_no), status_code
+    )
+    if not isinstance(json_data, dict):
+        raise RuntimeError(
+            f"SOOP legacy stream manager returned an unexpected response structure (HTTP={status_code})"
+        )
+    view_url = json_data.get('view_url')
+    if not isinstance(view_url, str) or not view_url.startswith('https://'):
+        raise RuntimeError(
+            f"SOOP legacy stream manager did not return a valid HTTPS view_url (HTTP={status_code})"
+        )
     return json_data
 
 
@@ -1075,12 +1154,10 @@ async def _get_sooplive_desktop_stream_data(
     }
 
     async def player_request(kind: str, quality: str = '') -> dict:
-        # The initial live lookup must match SOOP's current bid-only API
-        # request. Extra legacy player fields can cause RESULT=0.
-        if kind == 'live':
-            data = {'bid': bj_id}
-        else:
-            data = {**common_data, 'type': kind}
+        # Match the current SOOP player API request shape used by maintained
+        # clients: include broadcast number and common player parameters for
+        # live as well as AID requests.
+        data = {**common_data, 'type': kind}
         if quality:
             data['quality'] = quality
         status_code, response = await async_req(
@@ -1091,16 +1168,23 @@ async def _get_sooplive_desktop_stream_data(
             response, f'desktop_player_{kind}', bj_id, status_code
         )
         channel_data = parsed.get('CHANNEL') if isinstance(parsed, dict) else None
-        if not isinstance(channel_data, dict) or int(channel_data.get('RESULT', 0)) != 1:
-            raw_text = str(response or '')
-            # Redact token/password-like fields before logging response previews.
-            safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
-            diagnostic = (f'SOOP API failure detail: stage=desktop_player_{kind}; channel={bj_id}; '
-                  f'HTTP={status_code}; response_length={len(raw_text)}; '
-                  f'preview={safe_preview[:700]!r}')
-            print(diagnostic)
-            _write_soop_diagnostic(diagnostic)
-        return parsed['CHANNEL']
+        if not isinstance(channel_data, dict):
+            _log_soop_desktop_failure(
+                bj_id, f'desktop_player_{kind}', '回應缺少 CHANNEL 物件',
+                f'HTTP={status_code}；回應型別={type(parsed).__name__}'
+            )
+            return {}
+        # RESULT=0 is a documented SOOP offline-room response, not malformed
+        # JSON. Keep the caller's fallback path, but avoid dumping the same
+        # normal status payload into the diagnostic log for every request.
+        return channel_data
+
+    refreshed_cookie = None
+
+    def fallback_result() -> OptionalDict:
+        if refreshed_cookie:
+            return {'_soop_fallback': True, 'new_cookies': refreshed_cookie}
+        return None
 
     try:
         requested_broad_no = broad_no
@@ -1114,13 +1198,18 @@ async def _get_sooplive_desktop_stream_data(
             refreshed_cookie = None
 
         if int(channel.get('RESULT', 0)) != 1:
+            result_code = int(channel.get('RESULT', 0))
+            failure_reason = (
+                '直播未開播或平台未提供直播資料'
+                if result_code == 0 else '直播資訊查詢未成功'
+            )
             _log_soop_desktop_failure(
-                bj_id, 'desktop_player_live', '直播資訊未成功',
-                f"RESULT={channel.get('RESULT')}；BNO={channel.get('BNO')}；"
+                bj_id, 'desktop_player_live', failure_reason,
+                f"RESULT={result_code}；BNO={channel.get('BNO')}；"
                 f"原直播編號={requested_broad_no or '未提供'}；"
                 f"訊息={channel.get('MSG') or channel.get('message') or ''}"
             )
-            return None
+            return fallback_result()
 
         broad_no = str(channel.get('BNO') or broad_no)
         if not broad_no.isdigit():
@@ -1128,7 +1217,7 @@ async def _get_sooplive_desktop_stream_data(
                 bj_id, 'desktop_player_live', '缺少有效直播編號',
                 f"BNO={channel.get('BNO')!r}"
             )
-            return None
+            return fallback_result()
         common_data['bno'] = broad_no
         presets = ordered_presets(channel.get('VIEWPRESET') or [], requested_quality)
         if not presets:
@@ -1136,12 +1225,21 @@ async def _get_sooplive_desktop_stream_data(
                 bj_id, 'desktop_player_live', '平台未提供可用畫質選項',
                 f"要求畫質={requested_quality}；VIEWPRESET={str(channel.get('VIEWPRESET') or '')[:160]}"
             )
-            return None
+            return fallback_result()
         cdn = str(channel.get('CDN') or 'gcp_cdn')
         return_type = next((mapped for key, mapped in {
             'gs_cdn': 'gs_cdn_pc_web', 'lg_cdn': 'lg_cdn_pc_web'
         }.items() if key in cdn), cdn)
-        manager_url = 'https://livestream-manager.sooplive.com/broad_stream_assign.html'
+        # SOOP now supplies the resource-manager domain (RMD) in CHANNEL.
+        # Use it instead of hardcoding a potentially stale manager hostname.
+        rmd = str(channel.get('RMD') or '').strip().rstrip('/')
+        if not rmd.startswith('https://') and not rmd.startswith('http://'):
+            _log_soop_desktop_failure(
+                bj_id, 'desktop_player_live', '平台未提供有效資源管理器網址',
+                f"RMD={rmd[:160]!r}"
+            )
+            return fallback_result()
+        manager_url = rmd + '/broad_stream_assign.html'
         for preset in presets:
             quality = str(preset['name'])
             aid_channel = await player_request('aid', quality)
@@ -1164,6 +1262,12 @@ async def _get_sooplive_desktop_stream_data(
             manager_data = _parse_soop_json_response(
                 manager_response, 'desktop_stream_manager', bj_id, manager_status
             )
+            if not isinstance(manager_data, dict):
+                _log_soop_desktop_failure(
+                    bj_id, 'desktop_stream_manager', '資源管理器回應不是 JSON 物件',
+                    f'HTTP={manager_status}；回應型別={type(manager_data).__name__}'
+                )
+                continue
             view_url = manager_data.get('view_url')
             if not isinstance(view_url, str) or not view_url.startswith('https://'):
                 _log_soop_desktop_failure(
@@ -1193,10 +1297,10 @@ async def _get_sooplive_desktop_stream_data(
     _log_soop_desktop_failure(
         bj_id, 'desktop_player', '所有可用畫質均未取得串流'
     )
-    return None
+    return fallback_result()
 
 
-@trace_error_decorator
+@_trace_soop_async_error_decorator
 async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> str | tuple:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
@@ -1228,25 +1332,27 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
 
     url2 = f'https://live.sooplive.co.kr/afreeca/player_live_api.php?bjid={bj_id}'
     status_code, json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True, return_status=True)
-    try:
-        json_data = json.loads(json_str)
-    except Exception as error:
-        raw_text = str(json_str or '')
-        safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
-        diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
-              f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
-              f'preview={safe_preview[:700]!r}')
-        print(diagnostic)
-        _write_soop_diagnostic(diagnostic)
-        raise
+    json_data = _parse_soop_json_response(
+        json_str, f'legacy_player_{rtype}', bj_id, status_code
+    )
+    channel_data = json_data.get('CHANNEL') if isinstance(json_data, dict) else None
+    if not isinstance(channel_data, dict):
+        raise RuntimeError(
+            f"SOOP legacy player API returned an unexpected response structure "
+            f"(stage={rtype}, HTTP={status_code})"
+        )
 
     if rtype == 'aid':
-        token = json_data["CHANNEL"]["AID"]
+        token = channel_data.get('AID')
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError("SOOP legacy player API did not return a valid AID")
         return token
-    else:
-        bj_name = json_data['CHANNEL']['BJNICK']
-        bj_id = json_data['CHANNEL']['BJID']
-        return f"{bj_name}-{bj_id}", json_data['CHANNEL']['BNO']
+    bj_name = channel_data.get('BJNICK')
+    returned_bj_id = channel_data.get('BJID')
+    broad_no = channel_data.get('BNO')
+    if not bj_name or not returned_bj_id or not broad_no:
+        raise RuntimeError("SOOP legacy player API did not return complete channel information")
+    return f"{bj_name}-{returned_bj_id}", str(broad_no)
 
 
 def get_soop_headers(cookies):
@@ -1314,19 +1420,19 @@ async def _fetch_web_stream_data_global(url: str, proxy_addr: OptionalStr = None
             'is_live': True,
             'title': title,
             'm3u8_url': m3u8_url,
-            'play_url_list': await _get_url_list(m3u8_url)
+            'play_url_list': _soop_play_url_list_or_master(await _get_url_list(m3u8_url), m3u8_url)
         }
     return result
 
 
-@trace_error_decorator
+@_trace_soop_async_error_decorator
 async def get_sooplive_stream_data(
         url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None,
         username: OptionalStr = None, password: OptionalStr = None,
         preferred_fps: str = '自动', requested_quality: str = '原画'
 ) -> dict:
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/2019 Firefox/119.0',
         'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
         'Origin': 'https://play.sooplive.com',
         'Referer': 'https://m.sooplive.com/',
@@ -1340,11 +1446,20 @@ async def get_sooplive_stream_data(
     if "sooplive.com" in url and not re.search(r'play\.sooplive\.com/[^/]+/\d+', url):
         return await _fetch_web_stream_data_global(url, proxy_addr, cookies)
 
+    desktop_refreshed_cookie = None
     desktop_result = await _get_sooplive_desktop_stream_data(
         url, requested_quality, proxy_addr, cookies, username, password
     )
     if desktop_result:
-        return desktop_result
+        if not desktop_result.pop('_soop_fallback', False):
+            return desktop_result
+        # Desktop login may succeed even when stream resolution fails. Carry
+        # the refreshed cookie into the legacy API fallback instead of reusing
+        # the expired cookie from the caller.
+        desktop_refreshed_cookie = desktop_result.get('new_cookies')
+        cookies = desktop_refreshed_cookie or cookies
+        if cookies:
+            headers['Cookie'] = cookies
     _log_soop_desktop_fallback(urllib.parse.urlparse(url).path.strip('/').split('/')[0])
 
     split_url = url.split('/')
@@ -1393,88 +1508,155 @@ async def get_sooplive_stream_data(
                 "SOOP watch API returned a non-JSON response after retrying without the saved cookie"
             ) from retry_error
 
-    if 'user_nick' in json_data['data']:
-        anchor_name = json_data['data']['user_nick']
-        if "bj_id" in json_data['data']:
-            anchor_name = f"{anchor_name}-{json_data['data']['bj_id']}"
+    if not isinstance(json_data, dict) or not isinstance(json_data.get('data'), dict):
+        raise RuntimeError(
+            f"SOOP watch API returned an unexpected response structure (HTTP={watch_status})"
+        )
+    if 'result' not in json_data:
+        raise RuntimeError(
+            f"SOOP watch API response is missing its result field (HTTP={watch_status})"
+        )
+    try:
+        api_result_code = int(json_data['result'])
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"SOOP watch API returned an invalid result code (HTTP={watch_status})"
+        ) from None
+
+    watch_data = json_data['data']
+    raw_watch_code = watch_data.get('code')
+    try:
+        watch_code = int(raw_watch_code) if raw_watch_code is not None else None
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"SOOP watch API returned an invalid room status code (HTTP={watch_status})"
+        ) from None
+
+    if watch_data.get('user_nick'):
+        anchor_name = str(watch_data['user_nick'])
+        if watch_data.get('bj_id'):
+            anchor_name = f"{anchor_name}-{watch_data['bj_id']}"
     else:
         anchor_name = ''
 
-    result = {"anchor_name": anchor_name or '' ,"is_live": False}
+    result = {"anchor_name": anchor_name, "is_live": False}
+    result['new_cookies'] = desktop_refreshed_cookie
 
     async def get_url_list(m3u8: str) -> List[str]:
         resp = await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers, abroad=True)
         play_url_list = []
         url_prefix = m3u8.rsplit('/', maxsplit=1)[0] + '/'
-        for i in resp.split('\n'):
-            if i.startswith('auth_playlist'):
-                play_url_list.append(url_prefix + i.strip())
+        for item in resp.split('\n'):
+            if item.startswith('auth_playlist'):
+                play_url_list.append(url_prefix + item.strip())
         bandwidth_pattern = re.compile(r'BANDWIDTH=(\d+)')
         bandwidth_list = bandwidth_pattern.findall(resp)
         frame_rate_list = re.findall(r'FRAME-RATE=([\d.]+)', resp)
-        url_to_bandwidth = {purl: int(bandwidth) for bandwidth, purl in zip(bandwidth_list, play_url_list)}
+        url_to_bandwidth = {
+            purl: int(bandwidth)
+            for bandwidth, purl in zip(bandwidth_list, play_url_list)
+        }
         if str(preferred_fps) in ('30', '60') and len(frame_rate_list) == len(play_url_list):
             target_fps = int(preferred_fps)
-            matched_urls = [purl for fps, purl in zip(frame_rate_list, play_url_list) if round(float(fps)) == target_fps]
+            matched_urls = [
+                purl for fps, purl in zip(frame_rate_list, play_url_list)
+                if round(float(fps)) == target_fps
+            ]
             if matched_urls:
                 play_url_list = matched_urls
-        play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True)
+        play_url_list = sorted(
+            play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True
+        )
         return play_url_list
 
+    async def handle_login() -> OptionalStr:
+        cookie = await login_sooplive(username, password, proxy_addr=proxy_addr)
+        if cookie and 'AuthTicket=' in cookie:
+            print("sooplive platform login successful! Starting to fetch live streaming data...")
+            return cookie
+        return None
+
+    async def fetch_data(cookie: str) -> dict:
+        aid_token = await get_sooplive_tk(
+            url, rtype='aid', proxy_addr=proxy_addr, cookies=cookie
+        )
+        _anchor_name, _broad_no = await get_sooplive_tk(
+            url, rtype='info', proxy_addr=proxy_addr, cookies=cookie
+        )
+        _view_url_data = await get_sooplive_cdn_url(
+            _broad_no, proxy_addr=proxy_addr, cookies=cookie
+        )
+        _view_url = _view_url_data['view_url']
+        _m3u8_url = _view_url + '?aid=' + aid_token
+        result_data = {
+            "anchor_name": _anchor_name,
+            "is_live": True,
+            "m3u8_url": _m3u8_url,
+            'play_url_list': _soop_play_url_list_or_master(
+                await get_url_list(_m3u8_url), _m3u8_url
+            ),
+            'new_cookies': cookie
+        }
+        return result_data
+
+    # Room status codes must be handled independently of nickname presence.
+    # SOOP may encode numeric fields as either JSON numbers or numeric strings.
+    if watch_code == -3001:
+        print("sooplive live stream failed to retrieve, the live stream just ended.")
+        return result
+    if watch_code == -6001:
+        print("error message：Please check if the input sooplive live room address is correct.")
+        return result
+    if watch_code == -3002:
+        print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
+        if desktop_refreshed_cookie:
+            # The desktop API has already logged in during this polling cycle.
+            # Do not immediately submit the same account credentials a second time.
+            print("SOOP desktop login already refreshed the cookie in this cycle; "
+                  "preserving it and retrying on the next monitoring cycle.")
+            return result
+        print("Attempting to log in to the sooplive live streaming platform with your account and password, "
+              "please ensure it is configured.")
+        new_cookie = await handle_login()
+        if new_cookie:
+            return await fetch_data(new_cookie)
+        raise RuntimeError("sooplive login failed, please check if the account and password are correct")
+    if watch_code == -3004:
+        if cookies:
+            return await fetch_data(cookies)
+        raise RuntimeError("sooplive login failed, please check if the account and password are correct")
+
+    if api_result_code != 1:
+        if api_result_code == 0:
+            return result
+        raise RuntimeError(
+            f"SOOP watch API returned an unrecognized result code: {api_result_code} (HTTP={watch_status})"
+        )
+    if watch_code is None:
+        raise RuntimeError(
+            f"SOOP watch API response is missing its room status code (HTTP={watch_status})"
+        )
     if not anchor_name:
-        async def handle_login() -> OptionalStr:
-            cookie = await login_sooplive(username, password, proxy_addr=proxy_addr)
-            if 'AuthTicket=' in cookie:
-                print("sooplive platform login successful! Starting to fetch live streaming data...")
-                return cookie
+        raise RuntimeError(
+            f"SOOP watch API reports success but is missing the broadcaster nickname (HTTP={watch_status})"
+        )
 
-        async def fetch_data(cookie, _result) -> dict:
-            aid_token = await get_sooplive_tk(url, rtype='aid', proxy_addr=proxy_addr, cookies=cookie)
-            _anchor_name, _broad_no = await get_sooplive_tk(url, rtype='info', proxy_addr=proxy_addr, cookies=cookie)
-            _view_url_data = await get_sooplive_cdn_url(_broad_no, proxy_addr=proxy_addr)
-            _view_url = _view_url_data['view_url']
-            _m3u8_url = _view_url + '?aid=' + aid_token
-            _result |= {
-                "anchor_name": _anchor_name,
-                "is_live": True,
-                "m3u8_url": _m3u8_url,
-                'play_url_list': await get_url_list(_m3u8_url),
-                'new_cookies': cookie
-            }
-            return _result
-
-        if json_data['data']['code'] == -3001:
-            print("sooplive live stream failed to retrieve, the live stream just ended.")
-            return result
-
-        elif json_data['data']['code'] == -3002:
-            print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
-            print("Attempting to log in to the sooplive live streaming platform with your account and password, "
-                  "please ensure it is configured.")
-            new_cookie = await handle_login()
-            if new_cookie and len(new_cookie) > 0:
-                return await fetch_data(new_cookie, result)
-            raise RuntimeError("sooplive login failed, please check if the account and password are correct")
-
-        elif json_data['data']['code'] == -3004:
-            if cookies and len(cookies) > 0:
-                return await fetch_data(cookies, result)
-            else:
-                raise RuntimeError("sooplive login failed, please check if the account and password are correct")
-        elif json_data['data']['code'] == -6001:
-            print("error message：Please check if the input sooplive live room address "
-                  "is correct.")
-            return result
-    if json_data['result'] == 1 and anchor_name:
-        broad_no = json_data['data']['broad_no']
-        hls_authentication_key = json_data['data']['hls_authentication_key']
-        view_url_data = await get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)
-        view_url = view_url_data['view_url']
-        m3u8_url = view_url + '?aid=' + hls_authentication_key
-        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'play_url_list': await get_url_list(m3u8_url)}
-    result['new_cookies'] = None
+    broad_no = watch_data.get('broad_no')
+    hls_authentication_key = watch_data.get('hls_authentication_key')
+    if not broad_no or not hls_authentication_key:
+        raise RuntimeError("SOOP watch API reported a live stream without broad_no or authentication key")
+    view_url_data = await get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)
+    view_url = view_url_data['view_url']
+    m3u8_url = view_url + '?aid=' + hls_authentication_key
+    result |= {
+        'is_live': True,
+        'm3u8_url': m3u8_url,
+        'play_url_list': _soop_play_url_list_or_master(
+            await get_url_list(m3u8_url), m3u8_url
+        )
+    }
+    result['new_cookies'] = desktop_refreshed_cookie
     return result
-
 
 @trace_error_decorator
 async def get_netease_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:

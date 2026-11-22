@@ -15,6 +15,9 @@ from collections import OrderedDict
 import execjs
 from .logger import logger
 import configparser
+import threading
+
+_CONFIG_FILE_LOCK = threading.RLock()
 
 OptionalStr = str | None
 OptionalDict = dict | None
@@ -63,48 +66,50 @@ def dict_to_cookie_str(cookies_dict: dict) -> str:
 
 
 def read_config_value(file_path: str | Path, section: str, key: str) -> str | None:
-    config = configparser.ConfigParser()
+    with _CONFIG_FILE_LOCK:
+        config = configparser.ConfigParser()
 
-    try:
-        config.read(file_path, encoding='utf-8-sig')
-    except Exception as e:
-        print(f"Error occurred while reading the configuration file: {e}")
-        return None
+        try:
+            config.read(file_path, encoding='utf-8-sig')
+        except Exception as e:
+            print(f"Error occurred while reading the configuration file: {e}")
+            return None
 
-    if section in config:
-        if key in config[section]:
-            return config[section][key]
+        if section in config:
+            if key in config[section]:
+                return config[section][key]
+            else:
+                print(f"Key [{key}] does not exist in section [{section}].")
         else:
-            print(f"Key [{key}] does not exist in section [{section}].")
-    else:
-        print(f"Section [{section}] does not exist in the file.")
+            print(f"Section [{section}] does not exist in the file.")
 
-    return None
+        return None
 
 
 def update_config(file_path: str | Path, section: str, key: str, new_value: str) -> None:
-    config = configparser.ConfigParser()
+    with _CONFIG_FILE_LOCK:
+        config = configparser.ConfigParser()
 
-    try:
-        config.read(file_path, encoding='utf-8-sig')
-    except Exception as e:
-        print(f"An error occurred while reading the configuration file: {e}")
-        return
+        try:
+            config.read(file_path, encoding='utf-8-sig')
+        except Exception as e:
+            print(f"An error occurred while reading the configuration file: {e}")
+            return
 
-    if section not in config:
-        print(f"Section [{section}] does not exist in the file.")
-        return
+        if section not in config:
+            print(f"Section [{section}] does not exist in the file.")
+            return
 
-    # 转义%字符
-    escaped_value = new_value.replace('%', '%%')
-    config[section][key] = escaped_value
+        # 转义%字符
+        escaped_value = new_value.replace('%', '%%')
+        config[section][key] = escaped_value
 
-    try:
-        with open(file_path, 'w', encoding='utf-8-sig') as configfile:
-            config.write(configfile)
-        print(f"The value of {key} under [{section}] in the configuration file has been updated.")
-    except Exception as e:
-        print(f"Error occurred while writing to the configuration file: {e}")
+        try:
+            with open(file_path, 'w', encoding='utf-8-sig') as configfile:
+                config.write(configfile)
+            print(f"The value of {key} under [{section}] in the configuration file has been updated.")
+        except Exception as e:
+            print(f"Error occurred while writing to the configuration file: {e}")
 
 
 def get_file_paths(directory: str) -> list:
