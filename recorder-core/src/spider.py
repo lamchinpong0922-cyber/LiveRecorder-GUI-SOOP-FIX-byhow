@@ -115,6 +115,16 @@ def _parse_soop_json_response(response, stage: str, channel_id: str = '',
         raise
 
 
+
+def _soop_play_url_list_or_master(play_url_list: List[str], m3u8_url: str) -> List[str]:
+    """Keep SOOP live results compatible with stream.get_stream_url when variant parsing is empty."""
+    valid_urls = [
+        item.strip() for item in (play_url_list or [])
+        if isinstance(item, str) and item.strip()
+    ]
+    return valid_urls or [m3u8_url]
+
+
 def _log_soop_desktop_fallback(channel_id: str) -> None:
     """Log the desktop-to-legacy fallback once per channel to keep multi-recording logs readable."""
     key = str(channel_id or '未知')
@@ -1379,7 +1389,7 @@ async def _fetch_web_stream_data_global(url: str, proxy_addr: OptionalStr = None
             'is_live': True,
             'title': title,
             'm3u8_url': m3u8_url,
-            'play_url_list': await _get_url_list(m3u8_url)
+            'play_url_list': _soop_play_url_list_or_master(await _get_url_list(m3u8_url), m3u8_url)
         }
     return result
 
@@ -1512,7 +1522,7 @@ async def get_sooplive_stream_data(
                 "anchor_name": _anchor_name,
                 "is_live": True,
                 "m3u8_url": _m3u8_url,
-                'play_url_list': await get_url_list(_m3u8_url),
+                'play_url_list': _soop_play_url_list_or_master(await get_url_list(_m3u8_url), _m3u8_url),
                 'new_cookies': cookie
             }
             return _result
@@ -1548,7 +1558,7 @@ async def get_sooplive_stream_data(
         view_url_data = await get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)
         view_url = view_url_data['view_url']
         m3u8_url = view_url + '?aid=' + hls_authentication_key
-        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'play_url_list': await get_url_list(m3u8_url)}
+        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'play_url_list': _soop_play_url_list_or_master(await get_url_list(m3u8_url), m3u8_url)}
     result['new_cookies'] = None
     return result
 
