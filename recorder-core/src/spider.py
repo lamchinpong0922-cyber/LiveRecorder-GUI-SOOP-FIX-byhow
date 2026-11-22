@@ -1042,18 +1042,18 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
     # livestream-manager hostname now has a dangling CNAME and cannot resolve.
     url2 = 'https://livestream-manager.sooplive.com/broad_stream_assign.html?' + urllib.parse.urlencode(params)
     status_code, json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, abroad=True, return_status=True)
-    try:
-        json_data = json.loads(json_str)
-    except Exception as error:
-        raw_text = str(json_str or '')
-        safe_preview = _mask_soop_sensitive_text(raw_text)
-        diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
-              f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
-              f'preview={safe_preview[:700]!r}')
-        print(diagnostic)
-        _write_soop_diagnostic(diagnostic)
-        raise
-
+    json_data = _parse_soop_json_response(
+        json_str, 'legacy_stream_manager', str(broad_no), status_code
+    )
+    if not isinstance(json_data, dict):
+        raise RuntimeError(
+            f"SOOP legacy stream manager returned an unexpected response structure (HTTP={status_code})"
+        )
+    view_url = json_data.get('view_url')
+    if not isinstance(view_url, str) or not view_url.startswith('https://'):
+        raise RuntimeError(
+            f"SOOP legacy stream manager did not return a valid HTTPS view_url (HTTP={status_code})"
+        )
     return json_data
 
 
@@ -1189,6 +1189,12 @@ async def _get_sooplive_desktop_stream_data(
             manager_data = _parse_soop_json_response(
                 manager_response, 'desktop_stream_manager', bj_id, manager_status
             )
+            if not isinstance(manager_data, dict):
+                _log_soop_desktop_failure(
+                    bj_id, 'desktop_stream_manager', '資源管理器回應不是 JSON 物件',
+                    f'HTTP={manager_status}；回應型別={type(manager_data).__name__}'
+                )
+                continue
             view_url = manager_data.get('view_url')
             if not isinstance(view_url, str) or not view_url.startswith('https://'):
                 _log_soop_desktop_failure(
@@ -1253,25 +1259,27 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
 
     url2 = f'https://live.sooplive.co.kr/afreeca/player_live_api.php?bjid={bj_id}'
     status_code, json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True, return_status=True)
-    try:
-        json_data = json.loads(json_str)
-    except Exception as error:
-        raw_text = str(json_str or '')
-        safe_preview = _mask_soop_sensitive_text(raw_text)
-        diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
-              f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
-              f'preview={safe_preview[:700]!r}')
-        print(diagnostic)
-        _write_soop_diagnostic(diagnostic)
-        raise
+    json_data = _parse_soop_json_response(
+        json_str, f'legacy_player_{rtype}', bj_id, status_code
+    )
+    channel_data = json_data.get('CHANNEL') if isinstance(json_data, dict) else None
+    if not isinstance(channel_data, dict):
+        raise RuntimeError(
+            f"SOOP legacy player API returned an unexpected response structure "
+            f"(stage={rtype}, HTTP={status_code})"
+        )
 
     if rtype == 'aid':
-        token = json_data["CHANNEL"]["AID"]
+        token = channel_data.get('AID')
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError("SOOP legacy player API did not return a valid AID")
         return token
-    else:
-        bj_name = json_data['CHANNEL']['BJNICK']
-        bj_id = json_data['CHANNEL']['BJID']
-        return f"{bj_name}-{bj_id}", json_data['CHANNEL']['BNO']
+    bj_name = channel_data.get('BJNICK')
+    returned_bj_id = channel_data.get('BJID')
+    broad_no = channel_data.get('BNO')
+    if not bj_name or not returned_bj_id or not broad_no:
+        raise RuntimeError("SOOP legacy player API did not return complete channel information")
+    return f"{bj_name}-{returned_bj_id}", str(broad_no)
 
 
 def get_soop_headers(cookies):
@@ -1418,10 +1426,19 @@ async def get_sooplive_stream_data(
                 "SOOP watch API returned a non-JSON response after retrying without the saved cookie"
             ) from retry_error
 
-    if 'user_nick' in json_data['data']:
-        anchor_name = json_data['data']['user_nick']
-        if "bj_id" in json_data['data']:
-            anchor_name = f"{anchor_name}-{json_data['data']['bj_id']}"
+    if not isinstance(json_data, dict) or not isinstance(json_data.get('data'), dict):
+        raise RuntimeError(
+            f"SOOP watch API returned an unexpected response structure (HTTP={watch_status})"
+        )
+    watch_data = json_data['data']
+    if 'result' not in json_data or not isinstance(json_data.get('result'), (int, float, str)):
+        raise RuntimeError(
+            f"SOOP watch API response is missing a valid result field (HTTP={watch_status})"
+        )
+    if 'user_nick' in watch_data:
+        anchor_name = watch_data['user_nick']
+        if watch_data.get('bj_id'):
+            anchor_name = f"{anchor_name}-{watch_data['bj_id']}"
     else:
         anchor_name = ''
 
@@ -1449,7 +1466,7 @@ async def get_sooplive_stream_data(
     if not anchor_name:
         async def handle_login() -> OptionalStr:
             cookie = await login_sooplive(username, password, proxy_addr=proxy_addr)
-            if 'AuthTicket=' in cookie:
+            if cookie and 'AuthTicket=' in cookie:
                 print("sooplive platform login successful! Starting to fetch live streaming data...")
                 return cookie
 
@@ -1468,11 +1485,12 @@ async def get_sooplive_stream_data(
             }
             return _result
 
-        if json_data['data']['code'] == -3001:
+        watch_code = watch_data.get('code')
+        if watch_code == -3001:
             print("sooplive live stream failed to retrieve, the live stream just ended.")
             return result
 
-        elif json_data['data']['code'] == -3002:
+        elif watch_code == -3002:
             print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
             print("Attempting to log in to the sooplive live streaming platform with your account and password, "
                   "please ensure it is configured.")
@@ -1481,18 +1499,20 @@ async def get_sooplive_stream_data(
                 return await fetch_data(new_cookie, result)
             raise RuntimeError("sooplive login failed, please check if the account and password are correct")
 
-        elif json_data['data']['code'] == -3004:
+        elif watch_code == -3004:
             if cookies and len(cookies) > 0:
                 return await fetch_data(cookies, result)
             else:
                 raise RuntimeError("sooplive login failed, please check if the account and password are correct")
-        elif json_data['data']['code'] == -6001:
+        elif watch_code == -6001:
             print("error message：Please check if the input sooplive live room address "
                   "is correct.")
             return result
     if json_data['result'] == 1 and anchor_name:
-        broad_no = json_data['data']['broad_no']
-        hls_authentication_key = json_data['data']['hls_authentication_key']
+        broad_no = watch_data.get('broad_no')
+        hls_authentication_key = watch_data.get('hls_authentication_key')
+        if not broad_no or not hls_authentication_key:
+            raise RuntimeError("SOOP watch API reported a live stream without broad_no or authentication key")
         view_url_data = await get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)
         view_url = view_url_data['view_url']
         m3u8_url = view_url + '?aid=' + hls_authentication_key
