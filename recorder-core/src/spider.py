@@ -44,18 +44,20 @@ _SOOP_DESKTOP_DIAGNOSTICS_LOGGED = set()
 _SOOP_DESKTOP_FALLBACK_LOGGED = set()
 
 
-def _parse_soop_json_response(response, stage: str, channel_id: str = '') -> dict:
+def _parse_soop_json_response(response, stage: str, channel_id: str = '',
+                              status_code: int | None = None) -> dict:
     """Parse a SOOP API response and log a short, deduplicated diagnostic on invalid JSON."""
     try:
         return json.loads(response)
     except json.JSONDecodeError as error:
         raw = response.decode('utf-8', errors='replace') if isinstance(response, bytes) else str(response or '')
         preview = raw.strip()[:160]
-        signature = (stage, error.msg, raw.strip()[:80])
+        signature = (stage, status_code, error.msg, raw.strip()[:80])
         if signature not in _SOOP_DESKTOP_DIAGNOSTICS_LOGGED:
             _SOOP_DESKTOP_DIAGNOSTICS_LOGGED.add(signature)
             print(
                 f'SOOP API 回應不是有效 JSON：階段={stage}；頻道={channel_id or "未知"}；'
+                f'HTTP狀態={status_code if status_code is not None else "無回應"}；'
                 f'回應長度={len(raw)}；錯誤={error.msg}；回應開頭={preview!r}'
             )
         raise
@@ -1027,9 +1029,13 @@ async def _get_sooplive_desktop_stream_data(
         data = {**common_data, 'type': kind}
         if quality:
             data['quality'] = quality
-        response = await async_req(api_url, proxy_addr=proxy_addr, headers=headers,
-                                   data=data, abroad=True)
-        return _parse_soop_json_response(response, f'desktop_player_{kind}', bj_id)['CHANNEL']
+        status_code, response = await async_req(
+            api_url, proxy_addr=proxy_addr, headers=headers, data=data,
+            abroad=True, return_status=True
+        )
+        return _parse_soop_json_response(
+            response, f'desktop_player_{kind}', bj_id, status_code
+        )['CHANNEL']
 
     try:
         channel = await player_request('live')
@@ -1063,10 +1069,13 @@ async def _get_sooplive_desktop_stream_data(
                 'return_type': return_type,
                 'broad_key': f'{broad_no}-common-{quality}-hls',
             })
-            manager_response = await async_req(
-                f'{manager_url}?{params}', proxy_addr=proxy_addr, headers=headers, abroad=True
+            manager_status, manager_response = await async_req(
+                f'{manager_url}?{params}', proxy_addr=proxy_addr, headers=headers,
+                abroad=True, return_status=True
             )
-            view_url = _parse_soop_json_response(manager_response, 'desktop_stream_manager', bj_id).get('view_url')
+            view_url = _parse_soop_json_response(
+                manager_response, 'desktop_stream_manager', bj_id, manager_status
+            ).get('view_url')
             if not isinstance(view_url, str) or not view_url.startswith('https://'):
                 continue
             separator = '&' if '?' in view_url else '?'
