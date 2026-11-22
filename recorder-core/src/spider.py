@@ -1038,12 +1038,12 @@ async def _get_sooplive_desktop_stream_data(
     }
 
     async def player_request(kind: str, quality: str = '') -> dict:
-        data = {**common_data, 'type': kind}
-        # Resolve the broadcaster's current live broadcast by bid alone.
-        # yt-dlp's current SOOP extractor also omits bno from its initial
-        # type=live request, avoiding stale broadcast IDs embedded in URLs.
+        # The initial live lookup must match SOOP's current bid-only API
+        # request. Extra legacy player fields can cause RESULT=0.
         if kind == 'live':
-            data.pop('bno', None)
+            data = {'bid': bj_id}
+        else:
+            data = {**common_data, 'type': kind}
         if quality:
             data['quality'] = quality
         status_code, response = await async_req(
