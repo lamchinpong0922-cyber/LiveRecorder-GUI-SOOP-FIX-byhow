@@ -1001,8 +1001,16 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
     # SOOP migrated the Korean service from .co.kr to .com in 2026. The old
     # livestream-manager hostname now has a dangling CNAME and cannot resolve.
     url2 = 'https://livestream-manager.sooplive.com/broad_stream_assign.html?' + urllib.parse.urlencode(params)
-    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, abroad=True)
-    json_data = json.loads(json_str)
+    status_code, json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, abroad=True, return_status=True)
+    try:
+        json_data = json.loads(json_str)
+    except Exception as error:
+        raw_text = str(json_str or '')
+        safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
+        print(f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
+              f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
+              f'preview={safe_preview[:700]!r}')
+        raise
 
     return json_data
 
@@ -1050,9 +1058,18 @@ async def _get_sooplive_desktop_stream_data(
             api_url, proxy_addr=proxy_addr, headers=headers, data=data,
             abroad=True, return_status=True
         )
-        return _parse_soop_json_response(
+        parsed = _parse_soop_json_response(
             response, f'desktop_player_{kind}', bj_id, status_code
-        )['CHANNEL']
+        )
+        channel_data = parsed.get('CHANNEL') if isinstance(parsed, dict) else None
+        if not isinstance(channel_data, dict) or int(channel_data.get('RESULT', 0)) != 1:
+            raw_text = str(response or '')
+            # Redact token/password-like fields before logging response previews.
+            safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
+            print(f'SOOP API failure detail: stage=desktop_player_{kind}; channel={bj_id}; '
+                  f'HTTP={status_code}; response_length={len(raw_text)}; '
+                  f'preview={safe_preview[:700]!r}')
+        return parsed['CHANNEL']
 
     try:
         requested_broad_no = broad_no
@@ -1179,8 +1196,16 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
     }
 
     url2 = f'https://live.sooplive.co.kr/afreeca/player_live_api.php?bjid={bj_id}'
-    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
-    json_data = json.loads(json_str)
+    status_code, json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True, return_status=True)
+    try:
+        json_data = json.loads(json_str)
+    except Exception as error:
+        raw_text = str(json_str or '')
+        safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
+        print(f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
+              f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
+              f'preview={safe_preview[:700]!r}')
+        raise
 
     if rtype == 'aid':
         token = json_data["CHANNEL"]["AID"]
