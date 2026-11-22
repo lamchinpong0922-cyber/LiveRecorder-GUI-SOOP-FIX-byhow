@@ -1088,12 +1088,10 @@ async def _get_sooplive_desktop_stream_data(
     }
 
     async def player_request(kind: str, quality: str = '') -> dict:
-        # The initial live lookup must match SOOP's current bid-only API
-        # request. Extra legacy player fields can cause RESULT=0.
-        if kind == 'live':
-            data = {'bid': bj_id}
-        else:
-            data = {**common_data, 'type': kind}
+        # Match the current SOOP player API request shape used by maintained
+        # clients: include broadcast number and common player parameters for
+        # live as well as AID requests.
+        data = {**common_data, 'type': kind}
         if quality:
             data['quality'] = quality
         status_code, response = await async_req(
