@@ -1197,15 +1197,33 @@ async def _get_sooplive_desktop_stream_data(
         else:
             refreshed_cookie = None
 
-        if int(channel.get('RESULT', 0)) != 1:
-            result_code = int(channel.get('RESULT', 0))
-            failure_reason = (
-                '直播未開播或平台未提供直播資料'
-                if result_code == 0 else '直播資訊查詢未成功'
-            )
+        raw_result_code = channel.get('RESULT')
+        try:
+            result_code = int(raw_result_code) if raw_result_code is not None else None
+        except (TypeError, ValueError):
+            result_code = None
+
+        if result_code == 0:
+            # RESULT=0 is an explicit offline/no-live-data response. Do not
+            # send this room into the legacy watch/login/AID flow: that path
+            # can turn a normal ended broadcast into a misleading AID error.
             _log_soop_desktop_failure(
-                bj_id, 'desktop_player_live', failure_reason,
-                f"RESULT={result_code}；BNO={channel.get('BNO')}；"
+                bj_id, 'desktop_player_live', '直播未開播或平台未提供直播資料',
+                f"RESULT=0；BNO={channel.get('BNO')}；"
+                f"原直播編號={requested_broad_no or '未提供'}；"
+                f"訊息={channel.get('MSG') or channel.get('message') or ''}"
+            )
+            return {
+                '_soop_offline': True,
+                'anchor_name': f"{channel.get('BJNICK') or bj_id}-{bj_id}",
+                'is_live': False,
+                'new_cookies': refreshed_cookie,
+            }
+
+        if result_code != 1:
+            _log_soop_desktop_failure(
+                bj_id, 'desktop_player_live', '直播資訊查詢未成功',
+                f"RESULT={raw_result_code!r}；BNO={channel.get('BNO')}；"
                 f"原直播編號={requested_broad_no or '未提供'}；"
                 f"訊息={channel.get('MSG') or channel.get('message') or ''}"
             )
@@ -1345,7 +1363,14 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
     if rtype == 'aid':
         token = channel_data.get('AID')
         if not isinstance(token, str) or not token.strip():
-            raise RuntimeError("SOOP legacy player API did not return a valid AID")
+            result_code = channel_data.get('RESULT')
+            message = channel_data.get('MSG') or channel_data.get('message') or ''
+            available_fields = ','.join(sorted(str(key) for key in channel_data.keys()))
+            raise RuntimeError(
+                "SOOP legacy player API did not return a valid AID "
+                f"(stage={rtype}, HTTP={status_code}, RESULT={result_code!r}, "
+                f"message={str(message)[:120]!r}, fields={available_fields[:160]})"
+            )
         return token
     bj_name = channel_data.get('BJNICK')
     returned_bj_id = channel_data.get('BJID')
@@ -1451,6 +1476,10 @@ async def get_sooplive_stream_data(
         url, requested_quality, proxy_addr, cookies, username, password
     )
     if desktop_result:
+        if desktop_result.pop('_soop_offline', False):
+            # Preserve a refreshed cookie, but do not fall through to the
+            # legacy API for a room explicitly reported offline by desktop API.
+            return desktop_result
         if not desktop_result.pop('_soop_fallback', False):
             return desktop_result
         # Desktop login may succeed even when stream resolution fails. Carry
