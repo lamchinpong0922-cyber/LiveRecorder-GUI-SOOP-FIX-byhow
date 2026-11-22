@@ -1154,7 +1154,16 @@ async def _get_sooplive_desktop_stream_data(
         return_type = next((mapped for key, mapped in {
             'gs_cdn': 'gs_cdn_pc_web', 'lg_cdn': 'lg_cdn_pc_web'
         }.items() if key in cdn), cdn)
-        manager_url = 'https://livestream-manager.sooplive.com/broad_stream_assign.html'
+        # SOOP now supplies the resource-manager domain (RMD) in CHANNEL.
+        # Use it instead of hardcoding a potentially stale manager hostname.
+        rmd = str(channel.get('RMD') or '').strip().rstrip('/')
+        if not rmd.startswith('https://') and not rmd.startswith('http://'):
+            _log_soop_desktop_failure(
+                bj_id, 'desktop_player_live', '平台未提供有效資源管理器網址',
+                f"RMD={rmd[:160]!r}"
+            )
+            return None
+        manager_url = rmd + '/broad_stream_assign.html'
         for preset in presets:
             quality = str(preset['name'])
             aid_channel = await player_request('aid', quality)
