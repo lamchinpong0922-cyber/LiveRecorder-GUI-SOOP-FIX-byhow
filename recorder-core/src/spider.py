@@ -42,6 +42,18 @@ OptionalDict = dict | None
 # Avoid flooding the log when many SOOP rooms receive the same API response.
 _SOOP_DESKTOP_DIAGNOSTICS_LOGGED = set()
 _SOOP_DESKTOP_FALLBACK_LOGGED = set()
+_SOOP_DESKTOP_FAILURES_LOGGED = set()
+
+
+def _log_soop_desktop_failure(channel_id: str, stage: str, reason: str, details: str = '') -> None:
+    """Log actionable desktop-player failures once without changing fallback behavior."""
+    key = str(channel_id or '未知')
+    detail_text = str(details or '')[:240]
+    signature = (key, stage, reason, detail_text)
+    if signature not in _SOOP_DESKTOP_FAILURES_LOGGED:
+        _SOOP_DESKTOP_FAILURES_LOGGED.add(signature)
+        suffix = f'；詳情={detail_text}' if detail_text else ''
+        print(f'SOOP 新版播放器診斷：頻道={key}；階段={stage}；原因={reason}{suffix}')
 
 
 def _parse_soop_json_response(response, stage: str, channel_id: str = '',
@@ -1047,13 +1059,28 @@ async def _get_sooplive_desktop_stream_data(
         else:
             refreshed_cookie = None
         if int(channel.get('RESULT', 0)) != 1:
+            _log_soop_desktop_failure(
+                bj_id, 'desktop_player_live', '直播資訊未成功',
+                f"RESULT={channel.get('RESULT')}；BNO={channel.get('BNO')}；"
+                f"訊息={channel.get('MSG') or channel.get('message') or ''}"
+            )
             return None
 
         broad_no = str(channel.get('BNO') or broad_no)
         if not broad_no.isdigit():
+            _log_soop_desktop_failure(
+                bj_id, 'desktop_player_live', '缺少有效直播編號',
+                f"BNO={channel.get('BNO')!r}"
+            )
             return None
         common_data['bno'] = broad_no
         presets = ordered_presets(channel.get('VIEWPRESET') or [], requested_quality)
+        if not presets:
+            _log_soop_desktop_failure(
+                bj_id, 'desktop_player_live', '平台未提供可用畫質選項',
+                f"要求畫質={requested_quality}；VIEWPRESET={str(channel.get('VIEWPRESET') or '')[:160]}"
+            )
+            return None
         cdn = str(channel.get('CDN') or 'gcp_cdn')
         return_type = next((mapped for key, mapped in {
             'gs_cdn': 'gs_cdn_pc_web', 'lg_cdn': 'lg_cdn_pc_web'
@@ -1064,6 +1091,11 @@ async def _get_sooplive_desktop_stream_data(
             aid_channel = await player_request('aid', quality)
             aid = aid_channel.get('AID')
             if int(aid_channel.get('RESULT', 0)) != 1 or not aid:
+                _log_soop_desktop_failure(
+                    bj_id, 'desktop_player_aid', '無法取得畫質串流識別碼',
+                    f"畫質={preset.get('label') or quality}；RESULT={aid_channel.get('RESULT')}；"
+                    f"AID={'有' if aid else '無'}；訊息={aid_channel.get('MSG') or ''}"
+                )
                 continue
             params = urllib.parse.urlencode({
                 'return_type': return_type,
@@ -1073,10 +1105,16 @@ async def _get_sooplive_desktop_stream_data(
                 f'{manager_url}?{params}', proxy_addr=proxy_addr, headers=headers,
                 abroad=True, return_status=True
             )
-            view_url = _parse_soop_json_response(
+            manager_data = _parse_soop_json_response(
                 manager_response, 'desktop_stream_manager', bj_id, manager_status
-            ).get('view_url')
+            )
+            view_url = manager_data.get('view_url')
             if not isinstance(view_url, str) or not view_url.startswith('https://'):
+                _log_soop_desktop_failure(
+                    bj_id, 'desktop_stream_manager', '平台未回傳可用串流網址',
+                    f"HTTP={manager_status}；欄位={','.join(sorted(manager_data.keys()))[:160]}；"
+                    f"view_url_type={type(view_url).__name__}"
+                )
                 continue
             separator = '&' if '?' in view_url else '?'
             m3u8_url = view_url + separator + urllib.parse.urlencode({'aid': aid})
@@ -1092,7 +1130,13 @@ async def _get_sooplive_desktop_stream_data(
                 'new_cookies': refreshed_cookie,
             }
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        print(f'SOOP 桌面播放器畫質查詢失敗：{type(error).__name__}')
+        _log_soop_desktop_failure(
+            bj_id, 'desktop_player', '查詢過程發生例外',
+            f'{type(error).__name__}: {str(error)[:180]}'
+        )
+    _log_soop_desktop_failure(
+        bj_id, 'desktop_player', '所有可用畫質均未取得串流'
+    )
     return None
 
 
@@ -1254,9 +1298,14 @@ async def get_sooplive_stream_data(
     # misleading JSONDecodeError.
     url2 = 'https://api.m.sooplive.com/broad/a/watch'
 
-    json_str = await async_req(url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True)
+    watch_status, json_str = await async_req(
+        url=url2, proxy_addr=proxy_addr, headers=headers, data=data,
+        abroad=True, return_status=True
+    )
     try:
-        json_data = json.loads(json_str)
+        json_data = _parse_soop_json_response(
+            json_str, 'legacy_watch_api', bj_id, watch_status
+        )
     except json.JSONDecodeError as error:
         if not cookies:
             raise RuntimeError("SOOP watch API returned a non-JSON response") from error
@@ -1265,11 +1314,14 @@ async def get_sooplive_stream_data(
         # of the normal JSON error. Retry anonymously so the -3002 response
         # can enter the account-login path and refresh the saved cookie.
         headers.pop('Cookie', None)
-        json_str = await async_req(
-            url=url2, proxy_addr=proxy_addr, headers=headers, data=data, abroad=True
+        watch_status, json_str = await async_req(
+            url=url2, proxy_addr=proxy_addr, headers=headers, data=data,
+            abroad=True, return_status=True
         )
         try:
-            json_data = json.loads(json_str)
+            json_data = _parse_soop_json_response(
+                json_str, 'legacy_watch_api_anonymous_retry', bj_id, watch_status
+            )
         except json.JSONDecodeError as retry_error:
             raise RuntimeError(
                 "SOOP watch API returned a non-JSON response after retrying without the saved cookie"
