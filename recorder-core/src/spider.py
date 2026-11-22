@@ -1366,11 +1366,18 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
             result_code = channel_data.get('RESULT')
             message = channel_data.get('MSG') or channel_data.get('message') or ''
             available_fields = ','.join(sorted(str(key) for key in channel_data.keys()))
-            raise RuntimeError(
+            diagnostic = (
                 "SOOP legacy player API did not return a valid AID "
                 f"(stage={rtype}, HTTP={status_code}, RESULT={result_code!r}, "
                 f"message={str(message)[:120]!r}, fields={available_fields[:160]})"
             )
+            if str(result_code).strip() == '0':
+                _log_soop_desktop_failure(
+                    bj_id, 'legacy_player_aid', '平台未提供 AID，停止本輪登入取流',
+                    diagnostic
+                )
+                return None
+            raise RuntimeError(diagnostic)
         return token
     bj_name = channel_data.get('BJNICK')
     returned_bj_id = channel_data.get('BJID')
@@ -1609,6 +1616,11 @@ async def get_sooplive_stream_data(
         aid_token = await get_sooplive_tk(
             url, rtype='aid', proxy_addr=proxy_addr, cookies=cookie
         )
+        if not aid_token:
+            # RESULT=0 with no AID is a normal no-stream response, not an
+            # exception. Keep the refreshed cookie and retry next poll.
+            result['new_cookies'] = cookie
+            return result
         _anchor_name, _broad_no = await get_sooplive_tk(
             url, rtype='info', proxy_addr=proxy_addr, cookies=cookie
         )
