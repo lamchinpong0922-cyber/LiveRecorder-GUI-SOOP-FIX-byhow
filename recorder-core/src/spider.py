@@ -1102,16 +1102,16 @@ async def _get_sooplive_desktop_stream_data(
             response, f'desktop_player_{kind}', bj_id, status_code
         )
         channel_data = parsed.get('CHANNEL') if isinstance(parsed, dict) else None
-        if not isinstance(channel_data, dict) or int(channel_data.get('RESULT', 0)) != 1:
-            raw_text = str(response or '')
-            # Redact token/password-like fields before logging response previews.
-            safe_preview = _mask_soop_sensitive_text(raw_text)
-            diagnostic = (f'SOOP API failure detail: stage=desktop_player_{kind}; channel={bj_id}; '
-                  f'HTTP={status_code}; response_length={len(raw_text)}; '
-                  f'preview={safe_preview[:700]!r}')
-            print(diagnostic)
-            _write_soop_diagnostic(diagnostic)
-        return parsed['CHANNEL']
+        if not isinstance(channel_data, dict):
+            _log_soop_desktop_failure(
+                bj_id, f'desktop_player_{kind}', '回應缺少 CHANNEL 物件',
+                f'HTTP={status_code}；回應型別={type(parsed).__name__}'
+            )
+            return {}
+        # RESULT=0 is a documented SOOP offline-room response, not malformed
+        # JSON. Keep the caller's fallback path, but avoid dumping the same
+        # normal status payload into the diagnostic log for every request.
+        return channel_data
 
     try:
         requested_broad_no = broad_no
@@ -1125,9 +1125,14 @@ async def _get_sooplive_desktop_stream_data(
             refreshed_cookie = None
 
         if int(channel.get('RESULT', 0)) != 1:
+            result_code = int(channel.get('RESULT', 0))
+            failure_reason = (
+                '直播未開播或平台未提供直播資料'
+                if result_code == 0 else '直播資訊查詢未成功'
+            )
             _log_soop_desktop_failure(
-                bj_id, 'desktop_player_live', '直播資訊未成功',
-                f"RESULT={channel.get('RESULT')}；BNO={channel.get('BNO')}；"
+                bj_id, 'desktop_player_live', failure_reason,
+                f"RESULT={result_code}；BNO={channel.get('BNO')}；"
                 f"原直播編號={requested_broad_no or '未提供'}；"
                 f"訊息={channel.get('MSG') or channel.get('message') or ''}"
             )
