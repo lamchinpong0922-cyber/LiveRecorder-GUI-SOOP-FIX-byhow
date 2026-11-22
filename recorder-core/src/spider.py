@@ -1106,7 +1106,7 @@ async def _get_sooplive_desktop_stream_data(
     """Resolve a quality-specific Korean SOOP stream via the desktop player API."""
     path_parts = urllib.parse.urlparse(url).path.strip('/').split('/')
     if not path_parts or not path_parts[0]:
-        return fallback_result()
+        return None
     bj_id = path_parts[0]
     broad_no = path_parts[1] if len(path_parts) > 1 and path_parts[1].isdigit() else ''
     api_url = 'https://live.sooplive.com/afreeca/player_live_api.php'
@@ -1273,7 +1273,7 @@ async def _get_sooplive_desktop_stream_data(
     _log_soop_desktop_failure(
         bj_id, 'desktop_player', '所有可用畫質均未取得串流'
     )
-    return None
+    return fallback_result()
 
 
 @_trace_soop_async_error_decorator
