@@ -2168,6 +2168,18 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 count_time = time.time()
 
                 except Exception as e:
+                    refreshed_soop_cookie = getattr(e, 'new_cookies', None)
+                    if refreshed_soop_cookie:
+                        # A login can succeed before a later SOOP API request fails.
+                        # Persist that cookie now so the next retry does not reuse
+                        # the expired credential.
+                        sooplive_cookie = refreshed_soop_cookie
+                        try:
+                            utils.update_config(
+                                config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
+                            )
+                        except Exception as cookie_error:
+                            logger.error(f"保存 SOOP 更新後 Cookie 失敗: {cookie_error}")
                     logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
                     with max_request_lock:
                         error_count += 1
