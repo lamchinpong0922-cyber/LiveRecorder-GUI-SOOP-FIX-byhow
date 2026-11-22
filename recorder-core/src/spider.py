@@ -39,6 +39,35 @@ ssl_context.verify_mode = ssl.CERT_NONE
 OptionalStr = str | None
 OptionalDict = dict | None
 
+# Avoid flooding the log when many SOOP rooms receive the same API response.
+_SOOP_DESKTOP_DIAGNOSTICS_LOGGED = set()
+_SOOP_DESKTOP_FALLBACK_LOGGED = set()
+
+
+def _parse_soop_json_response(response, stage: str, channel_id: str = '') -> dict:
+    """Parse a SOOP API response and log a short, deduplicated diagnostic on invalid JSON."""
+    try:
+        return json.loads(response)
+    except json.JSONDecodeError as error:
+        raw = response.decode('utf-8', errors='replace') if isinstance(response, bytes) else str(response or '')
+        preview = raw.strip()[:160]
+        signature = (stage, error.msg, raw.strip()[:80])
+        if signature not in _SOOP_DESKTOP_DIAGNOSTICS_LOGGED:
+            _SOOP_DESKTOP_DIAGNOSTICS_LOGGED.add(signature)
+            print(
+                f'SOOP API 回應不是有效 JSON：階段={stage}；頻道={channel_id or "未知"}；'
+                f'回應長度={len(raw)}；錯誤={error.msg}；回應開頭={preview!r}'
+            )
+        raise
+
+
+def _log_soop_desktop_fallback(channel_id: str) -> None:
+    """Log the desktop-to-legacy fallback once per channel to keep multi-recording logs readable."""
+    key = str(channel_id or '未知')
+    if key not in _SOOP_DESKTOP_FALLBACK_LOGGED:
+        _SOOP_DESKTOP_FALLBACK_LOGGED.add(key)
+        print(f'SOOP 新版桌面播放器未取得可用串流，改用舊版播放清單；頻道={key}。')
+
 
 def get_params(url: str, params: str) -> OptionalStr:
     parsed_url = urllib.parse.urlparse(url)
@@ -1000,7 +1029,7 @@ async def _get_sooplive_desktop_stream_data(
             data['quality'] = quality
         response = await async_req(api_url, proxy_addr=proxy_addr, headers=headers,
                                    data=data, abroad=True)
-        return json.loads(response)['CHANNEL']
+        return _parse_soop_json_response(response, f'desktop_player_{kind}', bj_id)['CHANNEL']
 
     try:
         channel = await player_request('live')
@@ -1037,7 +1066,7 @@ async def _get_sooplive_desktop_stream_data(
             manager_response = await async_req(
                 f'{manager_url}?{params}', proxy_addr=proxy_addr, headers=headers, abroad=True
             )
-            view_url = json.loads(manager_response).get('view_url')
+            view_url = _parse_soop_json_response(manager_response, 'desktop_stream_manager', bj_id).get('view_url')
             if not isinstance(view_url, str) or not view_url.startswith('https://'):
                 continue
             separator = '&' if '?' in view_url else '?'
@@ -1197,7 +1226,7 @@ async def get_sooplive_stream_data(
     )
     if desktop_result:
         return desktop_result
-    print('SOOP 桌面播放器未提供可用串流，改用舊版播放清單；實際解析度可能低於設定。')
+    _log_soop_desktop_fallback(urllib.parse.urlparse(url).path.strip('/').split('/')[0])
 
     split_url = url.split('/')
     bj_id = split_url[3] if len(split_url) < 6 else split_url[5]
