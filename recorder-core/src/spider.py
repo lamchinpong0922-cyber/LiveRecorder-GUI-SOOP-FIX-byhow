@@ -31,6 +31,27 @@ from .room import get_sec_user_id, get_unique_id, UnsupportedUrlError
 from .http_clients.async_http import async_req
 from .ab_sign import ab_sign
 from .soop_quality import ordered_presets, preset_height
+import os
+from datetime import datetime
+
+_SOOP_DIAGNOSTIC_FILE = os.path.join(script_path, 'logs', 'SOOP診斷.log')
+_SOOP_DIAGNOSTIC_MAX_BYTES = 512 * 1024
+
+def _write_soop_diagnostic(message: str) -> None:
+    """Append SOOP diagnostics to a dedicated log, with a simple size cap."""
+    try:
+        os.makedirs(os.path.dirname(_SOOP_DIAGNOSTIC_FILE), exist_ok=True)
+        if os.path.exists(_SOOP_DIAGNOSTIC_FILE) and os.path.getsize(_SOOP_DIAGNOSTIC_FILE) >= _SOOP_DIAGNOSTIC_MAX_BYTES:
+            with open(_SOOP_DIAGNOSTIC_FILE, 'r', encoding='utf-8', errors='replace') as old:
+                tail = old.read()[-(_SOOP_DIAGNOSTIC_MAX_BYTES // 2):]
+            with open(_SOOP_DIAGNOSTIC_FILE, 'w', encoding='utf-8') as rotated:
+                rotated.write(f'--- LOG size cap rollover: {datetime.now().isoformat()} ---\n')
+                rotated.write(tail)
+        with open(_SOOP_DIAGNOSTIC_FILE, 'a', encoding='utf-8') as log:
+            log.write(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} | {message}\n')
+    except Exception as log_error:
+        print(f'SOOP diagnostics file write failed: {log_error}')
+
 
 
 ssl_context = ssl.create_default_context()
@@ -53,7 +74,9 @@ def _log_soop_desktop_failure(channel_id: str, stage: str, reason: str, details:
     if signature not in _SOOP_DESKTOP_FAILURES_LOGGED:
         _SOOP_DESKTOP_FAILURES_LOGGED.add(signature)
         suffix = f'；詳情={detail_text}' if detail_text else ''
-        print(f'SOOP 新版播放器診斷：頻道={key}；階段={stage}；原因={reason}{suffix}')
+        diagnostic = f'SOOP 新版播放器診斷：頻道={key}；階段={stage}；原因={reason}{suffix}'
+        print(diagnostic)
+        _write_soop_diagnostic(diagnostic)
 
 
 def _parse_soop_json_response(response, stage: str, channel_id: str = '',
@@ -67,11 +90,13 @@ def _parse_soop_json_response(response, stage: str, channel_id: str = '',
         signature = (stage, status_code, error.msg, raw.strip()[:80])
         if signature not in _SOOP_DESKTOP_DIAGNOSTICS_LOGGED:
             _SOOP_DESKTOP_DIAGNOSTICS_LOGGED.add(signature)
-            print(
+            diagnostic = (
                 f'SOOP API 回應不是有效 JSON：階段={stage}；頻道={channel_id or "未知"}；'
                 f'HTTP狀態={status_code if status_code is not None else "無回應"}；'
                 f'回應長度={len(raw)}；錯誤={error.msg}；回應開頭={preview!r}'
             )
+            print(diagnostic)
+            _write_soop_diagnostic(diagnostic)
         raise
 
 
@@ -80,7 +105,9 @@ def _log_soop_desktop_fallback(channel_id: str) -> None:
     key = str(channel_id or '未知')
     if key not in _SOOP_DESKTOP_FALLBACK_LOGGED:
         _SOOP_DESKTOP_FALLBACK_LOGGED.add(key)
-        print(f'SOOP 新版桌面播放器未取得可用串流，改用舊版播放清單；頻道={key}。')
+        diagnostic = f'SOOP 新版桌面播放器未取得可用串流，改用舊版播放清單；頻道={key}。'
+        print(diagnostic)
+        _write_soop_diagnostic(diagnostic)
 
 
 def get_params(url: str, params: str) -> OptionalStr:
@@ -1007,9 +1034,11 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
     except Exception as error:
         raw_text = str(json_str or '')
         safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
-        print(f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
+        diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
               f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
               f'preview={safe_preview[:700]!r}')
+        print(diagnostic)
+        _write_soop_diagnostic(diagnostic)
         raise
 
     return json_data
@@ -1066,9 +1095,11 @@ async def _get_sooplive_desktop_stream_data(
             raw_text = str(response or '')
             # Redact token/password-like fields before logging response previews.
             safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
-            print(f'SOOP API failure detail: stage=desktop_player_{kind}; channel={bj_id}; '
+            diagnostic = (f'SOOP API failure detail: stage=desktop_player_{kind}; channel={bj_id}; '
                   f'HTTP={status_code}; response_length={len(raw_text)}; '
                   f'preview={safe_preview[:700]!r}')
+            print(diagnostic)
+            _write_soop_diagnostic(diagnostic)
         return parsed['CHANNEL']
 
     try:
@@ -1202,9 +1233,11 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
     except Exception as error:
         raw_text = str(json_str or '')
         safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
-        print(f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
+        diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
               f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
               f'preview={safe_preview[:700]!r}')
+        print(diagnostic)
+        _write_soop_diagnostic(diagnostic)
         raise
 
     if rtype == 'aid':
