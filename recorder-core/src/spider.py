@@ -1065,21 +1065,6 @@ async def _get_sooplive_desktop_stream_data(
         else:
             refreshed_cookie = None
 
-        # A URL may contain an old broadcast number. The legacy watch API
-        # resolves the broadcaster's current live session without that number,
-        # so retry the desktop live lookup once without BNO before falling back.
-        if int(channel.get('RESULT', 0)) == 0 and requested_broad_no:
-            common_data['bno'] = ''
-            refreshed_channel = await player_request('live')
-            if int(refreshed_channel.get('RESULT', 0)) == 1:
-                channel = refreshed_channel
-                print(
-                    f'SOOP 新版播放器已更新直播場次：頻道={bj_id}；'
-                    f'原直播編號={requested_broad_no}；目前直播編號={channel.get("BNO")}'
-                )
-            else:
-                channel = refreshed_channel
-
         if int(channel.get('RESULT', 0)) != 1:
             _log_soop_desktop_failure(
                 bj_id, 'desktop_player_live', '直播資訊未成功',
