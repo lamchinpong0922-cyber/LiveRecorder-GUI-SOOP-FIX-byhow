@@ -86,16 +86,14 @@ def _parse_soop_json_response(response, stage: str, channel_id: str = '',
         return json.loads(response)
     except json.JSONDecodeError as error:
         raw = response.decode('utf-8', errors='replace') if isinstance(response, bytes) else str(response or '')
-        raw = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw)
-        preview = raw.strip()[:700]
-        signature = (stage, status_code, error.msg, raw.strip()[:120])
+        preview = raw.strip()[:160]
+        signature = (stage, status_code, error.msg, raw.strip()[:80])
         if signature not in _SOOP_DESKTOP_DIAGNOSTICS_LOGGED:
             _SOOP_DESKTOP_DIAGNOSTICS_LOGGED.add(signature)
             diagnostic = (
                 f'SOOP API 回應不是有效 JSON：階段={stage}；頻道={channel_id or "未知"}；'
                 f'HTTP狀態={status_code if status_code is not None else "無回應"}；'
-                f'回應長度={len(raw)}；錯誤={error.msg}；錯誤位置={error.pos}；'
-                f'回應開頭={preview!r}'
+                f'回應長度={len(raw)}；錯誤={error.msg}；回應開頭={preview!r}'
             )
             print(diagnostic)
             _write_soop_diagnostic(diagnostic)
@@ -399,7 +397,8 @@ async def get_kuaishou_stream_data(url: str, proxy_addr: OptionalStr = None, coo
         print(f"Failed to fetch data from {url}.{e}")
         return {"type": 1, "is_live": False}
 
-    try:        json_str = re.search('<script>window.__INITIAL_STATE__=(.*?);\\(function\\(\\)\\{var s;', html_str).group(1)
+    try:
+        json_str = re.search('<script>window.__INITIAL_STATE__=(.*?);\\(function\\(\\)\\{var s;', html_str).group(1)
         play_list = re.findall('(\\{"liveStream".*?),"gameInfo', json_str)[0] + "}"
         play_list = json.loads(play_list)
     except (AttributeError, IndexError, json.JSONDecodeError) as e:
@@ -798,7 +797,8 @@ async def get_bilibili_stream_data(url: str, qn: str = '10000', platform: str = 
     json_data = json.loads(json_str)
     if json_data and json_data['code'] == 0:
         for i in json_data['data']['durl']:
-            if 'd1--cn-gotcha' in i['url']:                return i['url']
+            if 'd1--cn-gotcha' in i['url']:
+                return i['url']
         return json_data['data']['durl'][-1]['url']
     else:
         params = {
@@ -1197,7 +1197,8 @@ async def _get_sooplive_desktop_stream_data(
 
 
 @trace_error_decorator
-async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> str | tuple:    headers = {
+async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> str | tuple:
+    headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
         'Origin': 'https://play.sooplive.co.kr',
         'Referer': 'https://play.sooplive.co.kr/secretx/250989857',
@@ -1263,7 +1264,7 @@ async def _get_soop_channel_info_global(bj_id, proxy_addr: OptionalStr = None, c
     headers = get_soop_headers(cookies)
     api = 'https://api.sooplive.com/v2/channel/info/' + str(bj_id)
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = _parse_soop_json_response(json_str, 'global_channel_info', bj_id)
+    json_data = json.loads(json_str)
     nickname = json_data['data']['streamerChannelInfo']['nickname']
     channelId = json_data['data']['streamerChannelInfo']['channelId']
     anchor_name = f"{nickname}-{channelId}"
@@ -1274,7 +1275,7 @@ async def _get_soop_stream_info_global(bj_id, proxy_addr: OptionalStr = None, co
     headers = get_soop_headers(cookies)
     api = 'https://api.sooplive.com/v2/stream/info/' + str(bj_id)
     json_str = await async_req(api, proxy_addr=proxy_addr, headers=headers)
-    json_data = _parse_soop_json_response(json_str, 'global_stream_info', bj_id)
+    json_data = json.loads(json_str)
     status = json_data['data']['isStream']
     title = json_data['data']['title']
     return status, title
@@ -1596,7 +1597,8 @@ async def get_maoerfm_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
         'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
         'referer': 'https://fm.missevan.com/live/868895007',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
-    }    if cookies:
+    }
+    if cookies:
         headers['Cookie'] = cookies
 
     room_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
@@ -1995,7 +1997,8 @@ async def get_popkontv_stream_data(
         if item['mcSignId'] == anchor_id:
             mc_name = item['nickName']
             anchor_name = f"{mc_name}-{anchor_id}"
-            partner_code = item['mcPartnerCode']            break
+            partner_code = item['mcPartnerCode']
+            break
 
     if not partner_code:
         if 'mcPartnerCode' in url:
@@ -2394,7 +2397,8 @@ async def get_twitchtv_room_info(url: str, token: str, proxy_addr: OptionalStr =
         'Referer': 'https://www.twitch.tv/',
         'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko',
         'Client-Integrity': token,
-        'Content-Type': 'text/plain;charset=UTF-8',    }
+        'Content-Type': 'text/plain;charset=UTF-8',
+    }
     if cookies:
         headers['Cookie'] = cookies
     uid = url.split('?')[0].rsplit('/', maxsplit=1)[-1]
@@ -2793,7 +2797,8 @@ async def get_acfun_stream_data(url: str, proxy_addr: OptionalStr = None, cookie
     author_id = url.split('?')[0].rsplit('/', maxsplit=1)[1]
     user_info_api = f'https://live.acfun.cn/rest/pc-direct/user/userInfo?userId={author_id}'
     json_str = await async_req(user_info_api, proxy_addr=proxy_addr, headers=headers)
-    json_data = json.loads(json_str)    anchor_name = json_data['profile']['name']
+    json_data = json.loads(json_str)
+    anchor_name = json_data['profile']['name']
     status = 'liveId' in json_data['profile']
     result = {"anchor_name": anchor_name, "is_live": False}
     if status:
@@ -3192,7 +3197,8 @@ async def get_pplive_stream_url(url: str, proxy_addr: OptionalStr = None, cookie
 
 @trace_error_decorator
 async def get_6room_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
-    headers = {        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+    headers = {
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
         'referer': 'https://ios.6.cn/?ver=8.0.3&build=4',
         'user-agent': 'ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))',
     }
@@ -3591,7 +3597,8 @@ async def get_lianjie_stream_url(url: str, proxy_addr: OptionalStr = None, cooki
 
 
 @trace_error_decorator
-async def get_laixiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:    def generate_uuid(ua_type: str):
+async def get_laixiu_stream_url(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
+    def generate_uuid(ua_type: str):
         if ua_type == "mobile":
             return str(uuid.uuid4())
         return str(uuid.uuid4()).replace('-', '')
