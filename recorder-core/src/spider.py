@@ -10,6 +10,8 @@ Function: Get live stream data.
 """
 
 import hashlib
+import functools
+import traceback
 import random
 import subprocess
 import time
@@ -121,6 +123,36 @@ def _log_soop_desktop_fallback(channel_id: str) -> None:
         diagnostic = f'SOOP 新版桌面播放器未取得可用串流，改用舊版播放清單；頻道={key}。'
         print(diagnostic)
         _write_soop_diagnostic(diagnostic)
+
+
+_SOOP_ASYNC_ERRORS_LOGGED = set()
+
+
+def _trace_soop_async_error_decorator(func):
+    """Log SOOP async failures without swallowing them or changing caller retry behavior."""
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as error:
+            # JSON decoding failures already have a response preview from the shared parser.
+            if not isinstance(error, json.JSONDecodeError):
+                traceback_items = traceback.extract_tb(error.__traceback__)
+                error_line = traceback_items[-1].lineno if traceback_items else '未知'
+                safe_error = _mask_soop_sensitive_text(str(error))[:240]
+                signature = (func.__name__, type(error).__name__, safe_error, error_line)
+                if signature not in _SOOP_ASYNC_ERRORS_LOGGED:
+                    _SOOP_ASYNC_ERRORS_LOGGED.add(signature)
+                    diagnostic = (
+                        f'SOOP 非同步函式發生例外（已向上傳遞）：函式={func.__name__}；'
+                        f'錯誤類型={type(error).__name__}；行數={error_line}；'
+                        f'錯誤內容={safe_error}'
+                    )
+                    print(diagnostic)
+                    _write_soop_diagnostic(diagnostic)
+            raise
+
+    return wrapper
 
 
 def get_params(url: str, params: str) -> OptionalStr:
@@ -1018,7 +1050,7 @@ async def login_sooplive(username: str, password: str, proxy_addr: OptionalStr =
         )
 
 
-@trace_error_decorator
+@_trace_soop_async_error_decorator
 async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
@@ -1227,7 +1259,7 @@ async def _get_sooplive_desktop_stream_data(
     return None
 
 
-@trace_error_decorator
+@_trace_soop_async_error_decorator
 async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> str | tuple:
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
@@ -1352,7 +1384,7 @@ async def _fetch_web_stream_data_global(url: str, proxy_addr: OptionalStr = None
     return result
 
 
-@trace_error_decorator
+@_trace_soop_async_error_decorator
 async def get_sooplive_stream_data(
         url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None,
         username: OptionalStr = None, password: OptionalStr = None,
