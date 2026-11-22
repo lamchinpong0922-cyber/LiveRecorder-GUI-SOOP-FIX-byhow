@@ -1,8 +1,8 @@
 {
   "enabled": true,
   "mode": "daily",
-  "time": "15:30",
-  "nextRun": "2026-11-20T15:30:00",
+  "time": "03:30",
+  "nextRun": "2026-11-23T03:30:00",
   "phase": "scheduled",
   "remaining": 0,
   "message": "每日定時關閉已恢復",
