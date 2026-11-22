@@ -1196,14 +1196,29 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                             # so parallel rooms cannot log in with the same expired cookie.
                             with soop_cookie_lock:
                                 if global_proxy or proxy_address:
-                                    json_data = asyncio.run(spider.get_sooplive_stream_data(
-                                        url=record_url, proxy_addr=proxy_address,
-                                        cookies=sooplive_cookie,
-                                        username=sooplive_username,
-                                        password=sooplive_password,
-                                        preferred_fps=preferred_fps,
-                                        requested_quality=record_quality_zh
-                                    ))
+                                    try:
+                                        json_data = asyncio.run(spider.get_sooplive_stream_data(
+                                            url=record_url, proxy_addr=proxy_address,
+                                            cookies=sooplive_cookie,
+                                            username=sooplive_username,
+                                            password=sooplive_password,
+                                            preferred_fps=preferred_fps,
+                                            requested_quality=record_quality_zh
+                                        ))
+                                    except Exception as soop_error:
+                                        # Persist a login cookie before releasing the shared lock.
+                                        # Otherwise another room can enter with the stale cookie
+                                        # between this request failing and the outer retry handler.
+                                        refreshed_cookie = getattr(soop_error, 'new_cookies', None)
+                                        if refreshed_cookie:
+                                            sooplive_cookie = refreshed_cookie
+                                            try:
+                                                utils.update_config(
+                                                    config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
+                                                )
+                                            except Exception as cookie_error:
+                                                logger.error(f"保存 SOOP 更新後 Cookie 失敗: {cookie_error}")
+                                        raise
                                     if json_data and json_data.get('new_cookies'):
                                         sooplive_cookie = json_data['new_cookies']
                                         utils.update_config(
@@ -2174,16 +2189,18 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                 except Exception as e:
                     refreshed_soop_cookie = getattr(e, 'new_cookies', None)
                     if refreshed_soop_cookie:
-                        # Keep exception-path refreshes under the same lock as
-                        # successful SOOP responses to prevent stale overwrites.
+                        # Fallback guard for a cookie-bearing exception raised outside
+                        # the request block. Avoid rewriting a cookie already persisted
+                        # by the inner handler while the SOOP lock was held.
                         with soop_cookie_lock:
-                            sooplive_cookie = refreshed_soop_cookie
-                            try:
-                                utils.update_config(
-                                    config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
-                                )
-                            except Exception as cookie_error:
-                                logger.error(f"保存 SOOP 更新後 Cookie 失敗: {cookie_error}")
+                            if refreshed_soop_cookie != sooplive_cookie:
+                                sooplive_cookie = refreshed_soop_cookie
+                                try:
+                                    utils.update_config(
+                                        config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
+                                    )
+                                except Exception as cookie_error:
+                                    logger.error(f"保存 SOOP 更新後 Cookie 失敗: {cookie_error}")
                     logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
                     with max_request_lock:
                         error_count += 1
