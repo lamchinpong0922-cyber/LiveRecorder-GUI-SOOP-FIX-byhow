@@ -2301,18 +2301,20 @@ def check_ffmpeg_existence() -> bool:
         result = subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True, text=True)
         if result.returncode == 0:
             lines = result.stdout.splitlines()
-            version_line = lines[0]
-            built_line = lines[1]
-            print(version_line)
-            print(built_line)
+            if lines:
+                print(lines[0])
+            if len(lines) > 1:
+                print(lines[1])
     except subprocess.CalledProcessError as e:
         logger.error(e)
     except FileNotFoundError:
         pass
-    finally:
-        if check_ffmpeg():
-            time.sleep(1)
-            return True
+
+    # Keep the installer check after the direct PATH check. Returning from a
+    # finally block could suppress an unexpected exception from subprocess.run.
+    if check_ffmpeg():
+        time.sleep(1)
+        return True
     return False
 
 
