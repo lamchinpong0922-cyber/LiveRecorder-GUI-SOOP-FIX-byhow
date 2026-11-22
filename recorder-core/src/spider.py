@@ -1106,7 +1106,7 @@ async def _get_sooplive_desktop_stream_data(
     """Resolve a quality-specific Korean SOOP stream via the desktop player API."""
     path_parts = urllib.parse.urlparse(url).path.strip('/').split('/')
     if not path_parts or not path_parts[0]:
-        return None
+        return fallback_result()
     bj_id = path_parts[0]
     broad_no = path_parts[1] if len(path_parts) > 1 and path_parts[1].isdigit() else ''
     api_url = 'https://live.sooplive.com/afreeca/player_live_api.php'
@@ -1178,7 +1178,7 @@ async def _get_sooplive_desktop_stream_data(
                 f"原直播編號={requested_broad_no or '未提供'}；"
                 f"訊息={channel.get('MSG') or channel.get('message') or ''}"
             )
-            return None
+            return fallback_result()
 
         broad_no = str(channel.get('BNO') or broad_no)
         if not broad_no.isdigit():
@@ -1419,7 +1419,14 @@ async def get_sooplive_stream_data(
         url, requested_quality, proxy_addr, cookies, username, password
     )
     if desktop_result:
-        return desktop_result
+        if not desktop_result.pop('_soop_fallback', False):
+            return desktop_result
+        # Desktop login may succeed even when stream resolution fails. Carry
+        # the refreshed cookie into the legacy API fallback instead of reusing
+        # the expired cookie from the caller.
+        cookies = desktop_result.get('new_cookies') or cookies
+        if cookies:
+            headers['Cookie'] = cookies
     _log_soop_desktop_fallback(urllib.parse.urlparse(url).path.strip('/').split('/')[0])
 
     split_url = url.split('/')
