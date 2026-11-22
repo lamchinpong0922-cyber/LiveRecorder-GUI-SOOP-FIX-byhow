@@ -65,6 +65,19 @@ _SOOP_DESKTOP_DIAGNOSTICS_LOGGED = set()
 _SOOP_DESKTOP_FALLBACK_LOGGED = set()
 _SOOP_DESKTOP_FAILURES_LOGGED = set()
 
+def _mask_soop_sensitive_text(raw_text: str) -> str:
+    """Mask credential-like fields before writing API response previews to logs."""
+    text = str(raw_text or '')
+    patterns = [
+        r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE|ACCESS_TOKEN|AUTHORIZATION)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)',
+        r'(?i)(authorization\\s*[:=]\\s*)([^\\r\\n]+)',
+        r'(?i)(cookie\\s*[:=]\\s*)([^\\r\\n]+)',
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, r'\\1[REDACTED]', text)
+    return text
+
+
 
 def _log_soop_desktop_failure(channel_id: str, stage: str, reason: str, details: str = '') -> None:
     """Log actionable desktop-player failures once without changing fallback behavior."""
@@ -86,7 +99,7 @@ def _parse_soop_json_response(response, stage: str, channel_id: str = '',
         return json.loads(response)
     except json.JSONDecodeError as error:
         raw = response.decode('utf-8', errors='replace') if isinstance(response, bytes) else str(response or '')
-        preview = raw.strip()[:160]
+        preview = _mask_soop_sensitive_text(raw.strip())[:160]
         signature = (stage, status_code, error.msg, raw.strip()[:80])
         if signature not in _SOOP_DESKTOP_DIAGNOSTICS_LOGGED:
             _SOOP_DESKTOP_DIAGNOSTICS_LOGGED.add(signature)
@@ -1033,7 +1046,7 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
         json_data = json.loads(json_str)
     except Exception as error:
         raw_text = str(json_str or '')
-        safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
+            safe_preview = _mask_soop_sensitive_text(raw_text)
         diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
               f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
               f'preview={safe_preview[:700]!r}')
@@ -1094,7 +1107,7 @@ async def _get_sooplive_desktop_stream_data(
         if not isinstance(channel_data, dict) or int(channel_data.get('RESULT', 0)) != 1:
             raw_text = str(response or '')
             # Redact token/password-like fields before logging response previews.
-            safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
+            safe_preview = _mask_soop_sensitive_text(raw_text)
             diagnostic = (f'SOOP API failure detail: stage=desktop_player_{kind}; channel={bj_id}; '
                   f'HTTP={status_code}; response_length={len(raw_text)}; '
                   f'preview={safe_preview[:700]!r}')
@@ -1232,7 +1245,7 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
         json_data = json.loads(json_str)
     except Exception as error:
         raw_text = str(json_str or '')
-        safe_preview = re.sub(r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)', r'\\1[REDACTED]', raw_text)
+            safe_preview = _mask_soop_sensitive_text(raw_text)
         diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
               f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
               f'preview={safe_preview[:700]!r}')
