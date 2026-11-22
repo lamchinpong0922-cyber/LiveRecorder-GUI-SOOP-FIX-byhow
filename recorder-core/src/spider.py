@@ -1422,6 +1422,7 @@ async def get_sooplive_stream_data(
     if "sooplive.com" in url and not re.search(r'play\.sooplive\.com/[^/]+/\d+', url):
         return await _fetch_web_stream_data_global(url, proxy_addr, cookies)
 
+    desktop_refreshed_cookie = None
     desktop_result = await _get_sooplive_desktop_stream_data(
         url, requested_quality, proxy_addr, cookies, username, password
     )
@@ -1431,7 +1432,8 @@ async def get_sooplive_stream_data(
         # Desktop login may succeed even when stream resolution fails. Carry
         # the refreshed cookie into the legacy API fallback instead of reusing
         # the expired cookie from the caller.
-        cookies = desktop_result.get('new_cookies') or cookies
+        desktop_refreshed_cookie = desktop_result.get('new_cookies')
+        cookies = desktop_refreshed_cookie or cookies
         if cookies:
             headers['Cookie'] = cookies
     _log_soop_desktop_fallback(urllib.parse.urlparse(url).path.strip('/').split('/')[0])
@@ -1514,6 +1516,7 @@ async def get_sooplive_stream_data(
         anchor_name = ''
 
     result = {"anchor_name": anchor_name, "is_live": False}
+    result['new_cookies'] = desktop_refreshed_cookie
 
     async def get_url_list(m3u8: str) -> List[str]:
         resp = await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers, abroad=True)
@@ -1620,7 +1623,7 @@ async def get_sooplive_stream_data(
             await get_url_list(m3u8_url), m3u8_url
         )
     }
-    result['new_cookies'] = None
+    result['new_cookies'] = desktop_refreshed_cookie
     return result
 
 @trace_error_decorator
