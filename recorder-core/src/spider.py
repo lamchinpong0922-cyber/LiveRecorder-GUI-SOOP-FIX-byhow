@@ -69,12 +69,12 @@ def _mask_soop_sensitive_text(raw_text: str) -> str:
     """Mask credential-like fields before writing API response previews to logs."""
     text = str(raw_text or '')
     patterns = [
-        r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE|ACCESS_TOKEN|AUTHORIZATION)"?\\s*[:=]\\s*)("[^"\\n]*"|[^,}\\s]+)',
-        r'(?i)(authorization\\s*[:=]\\s*)([^\\r\\n]+)',
-        r'(?i)(cookie\\s*[:=]\\s*)([^\\r\\n]+)',
+        r'(?i)("?(?:AID|AUTH|TOKEN|PWD|PASSWORD|COOKIE|ACCESS_TOKEN|AUTHORIZATION)"?\s*[:=]\s*)("[^"\n]*"|[^,}\s]+)',
+        r'(?i)(authorization\s*[:=]\s*)([^\r\n]+)',
+        r'(?i)(cookie\s*[:=]\s*)([^\r\n]+)',
     ]
     for pattern in patterns:
-        text = re.sub(pattern, r'\\1[REDACTED]', text)
+        text = re.sub(pattern, r'\1[REDACTED]', text)
     return text
 
 
