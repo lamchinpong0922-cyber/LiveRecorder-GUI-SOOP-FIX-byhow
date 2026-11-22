@@ -51,6 +51,8 @@ recording = set()
 error_count = 0
 pre_max_request = 10
 max_request_lock = threading.Lock()
+# Serialize SOOP authentication and cookie replacement across recording threads.
+soop_cookie_lock = threading.RLock()
 error_window = []
 error_window_size = 10
 error_threshold = 5
@@ -1189,25 +1191,27 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                     elif record_url.find("sooplive.co.kr/") > -1 or record_url.find("sooplive.com/") > -1:
                         platform = 'SOOP'
                         with semaphore:
-                            if global_proxy or proxy_address:
-                                json_data = asyncio.run(spider.get_sooplive_stream_data(
-                                    url=record_url, proxy_addr=proxy_address,
-                                    cookies=sooplive_cookie,
-                                    username=sooplive_username,
-                                    password=sooplive_password,
-                                    preferred_fps=preferred_fps,
-                                    requested_quality=record_quality_zh
-                                ))
-                                if json_data and json_data.get('new_cookies'):
-                                    # Keep the running recorder's in-memory cookie in sync
-                                    # with config.ini so the next polling cycle uses it too.
-                                    sooplive_cookie = json_data['new_cookies']
-                                    utils.update_config(
-                                        config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
-                                    )
-                                port_info = asyncio.run(stream.get_stream_url(json_data, record_quality, spec=True))
-                            else:
-                                logger.error("错误信息: 网络异常，请检查本网络是否能正常访问SOOP平台")
+                            # One account cookie is shared by all SOOP recording threads.
+                            # Keep request, refresh, and persistence in one critical section
+                            # so parallel rooms cannot log in with the same expired cookie.
+                            with soop_cookie_lock:
+                                if global_proxy or proxy_address:
+                                    json_data = asyncio.run(spider.get_sooplive_stream_data(
+                                        url=record_url, proxy_addr=proxy_address,
+                                        cookies=sooplive_cookie,
+                                        username=sooplive_username,
+                                        password=sooplive_password,
+                                        preferred_fps=preferred_fps,
+                                        requested_quality=record_quality_zh
+                                    ))
+                                    if json_data and json_data.get('new_cookies'):
+                                        sooplive_cookie = json_data['new_cookies']
+                                        utils.update_config(
+                                            config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
+                                        )
+                                    port_info = asyncio.run(stream.get_stream_url(json_data, record_quality, spec=True))
+                                else:
+                                    logger.error("错误信息: 网络异常，请检查本网络是否能正常访问SOOP平台")
 
                     elif record_url.find("cc.163.com/") > -1:
                         platform = '网易CC直播'
@@ -2170,16 +2174,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                 except Exception as e:
                     refreshed_soop_cookie = getattr(e, 'new_cookies', None)
                     if refreshed_soop_cookie:
-                        # A login can succeed before a later SOOP API request fails.
-                        # Persist that cookie now so the next retry does not reuse
-                        # the expired credential.
-                        sooplive_cookie = refreshed_soop_cookie
-                        try:
-                            utils.update_config(
-                                config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
-                            )
-                        except Exception as cookie_error:
-                            logger.error(f"保存 SOOP 更新後 Cookie 失敗: {cookie_error}")
+                        # Keep exception-path refreshes under the same lock as
+                        # successful SOOP responses to prevent stale overwrites.
+                        with soop_cookie_lock:
+                            sooplive_cookie = refreshed_soop_cookie
+                            try:
+                                utils.update_config(
+                                    config_file, 'Cookie', 'sooplive_cookie', sooplive_cookie
+                                )
+                            except Exception as cookie_error:
+                                logger.error(f"保存 SOOP 更新後 Cookie 失敗: {cookie_error}")
                     logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
                     with max_request_lock:
                         error_count += 1
