@@ -1155,6 +1155,13 @@ async def _get_sooplive_desktop_stream_data(
         # normal status payload into the diagnostic log for every request.
         return channel_data
 
+    refreshed_cookie = None
+
+    def fallback_result() -> OptionalDict:
+        if refreshed_cookie:
+            return {'_soop_fallback': True, 'new_cookies': refreshed_cookie}
+        return None
+
     try:
         requested_broad_no = broad_no
         channel = await player_request('live')
@@ -1186,7 +1193,7 @@ async def _get_sooplive_desktop_stream_data(
                 bj_id, 'desktop_player_live', '缺少有效直播編號',
                 f"BNO={channel.get('BNO')!r}"
             )
-            return None
+            return fallback_result()
         common_data['bno'] = broad_no
         presets = ordered_presets(channel.get('VIEWPRESET') or [], requested_quality)
         if not presets:
@@ -1194,7 +1201,7 @@ async def _get_sooplive_desktop_stream_data(
                 bj_id, 'desktop_player_live', '平台未提供可用畫質選項',
                 f"要求畫質={requested_quality}；VIEWPRESET={str(channel.get('VIEWPRESET') or '')[:160]}"
             )
-            return None
+            return fallback_result()
         cdn = str(channel.get('CDN') or 'gcp_cdn')
         return_type = next((mapped for key, mapped in {
             'gs_cdn': 'gs_cdn_pc_web', 'lg_cdn': 'lg_cdn_pc_web'
@@ -1207,7 +1214,7 @@ async def _get_sooplive_desktop_stream_data(
                 bj_id, 'desktop_player_live', '平台未提供有效資源管理器網址',
                 f"RMD={rmd[:160]!r}"
             )
-            return None
+            return fallback_result()
         manager_url = rmd + '/broad_stream_assign.html'
         for preset in presets:
             quality = str(preset['name'])
