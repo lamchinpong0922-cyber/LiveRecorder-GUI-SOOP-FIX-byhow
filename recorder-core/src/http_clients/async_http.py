@@ -20,7 +20,8 @@ async def async_req(
         abroad: bool = False,
         content_conding: str = 'utf-8',
         verify: bool = False,
-        http2: bool = True
+        http2: bool = True,
+        return_status: bool = False
 ) -> OptionalDict | OptionalStr | tuple:
     if headers is None:
         headers = {}
@@ -33,6 +34,8 @@ async def async_req(
             async with httpx.AsyncClient(proxy=proxy_addr, timeout=timeout, verify=verify, http2=http2) as client:
                 response = await client.get(url, headers=headers, follow_redirects=True)
 
+        if return_status:
+            return response.status_code, response.text
         if redirect_url:
             return str(response.url)
         elif return_cookies:
@@ -41,6 +44,8 @@ async def async_req(
         else:
             resp_str = response.text
     except Exception as e:
+        if return_status:
+            return None, str(e)
         resp_str = str(e)
 
     return resp_str
