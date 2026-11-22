@@ -1401,7 +1401,7 @@ async def get_sooplive_stream_data(
         preferred_fps: str = '自动', requested_quality: str = '原画'
 ) -> dict:
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/2019 Firefox/119.0',
         'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
         'Origin': 'https://play.sooplive.com',
         'Referer': 'https://m.sooplive.com/',
@@ -1472,96 +1472,142 @@ async def get_sooplive_stream_data(
         raise RuntimeError(
             f"SOOP watch API returned an unexpected response structure (HTTP={watch_status})"
         )
-    watch_data = json_data['data']
-    if 'result' not in json_data or not isinstance(json_data.get('result'), (int, float, str)):
+    if 'result' not in json_data:
         raise RuntimeError(
-            f"SOOP watch API response is missing a valid result field (HTTP={watch_status})"
+            f"SOOP watch API response is missing its result field (HTTP={watch_status})"
         )
-    if 'user_nick' in watch_data:
-        anchor_name = watch_data['user_nick']
+    try:
+        api_result_code = int(json_data['result'])
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"SOOP watch API returned an invalid result code (HTTP={watch_status})"
+        ) from None
+
+    watch_data = json_data['data']
+    raw_watch_code = watch_data.get('code')
+    try:
+        watch_code = int(raw_watch_code) if raw_watch_code is not None else None
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"SOOP watch API returned an invalid room status code (HTTP={watch_status})"
+        ) from None
+
+    if watch_data.get('user_nick'):
+        anchor_name = str(watch_data['user_nick'])
         if watch_data.get('bj_id'):
             anchor_name = f"{anchor_name}-{watch_data['bj_id']}"
     else:
         anchor_name = ''
 
-    result = {"anchor_name": anchor_name or '' ,"is_live": False}
+    result = {"anchor_name": anchor_name, "is_live": False}
 
     async def get_url_list(m3u8: str) -> List[str]:
         resp = await async_req(url=m3u8, proxy_addr=proxy_addr, headers=headers, abroad=True)
         play_url_list = []
         url_prefix = m3u8.rsplit('/', maxsplit=1)[0] + '/'
-        for i in resp.split('\n'):
-            if i.startswith('auth_playlist'):
-                play_url_list.append(url_prefix + i.strip())
+        for item in resp.split('\n'):
+            if item.startswith('auth_playlist'):
+                play_url_list.append(url_prefix + item.strip())
         bandwidth_pattern = re.compile(r'BANDWIDTH=(\d+)')
         bandwidth_list = bandwidth_pattern.findall(resp)
         frame_rate_list = re.findall(r'FRAME-RATE=([\d.]+)', resp)
-        url_to_bandwidth = {purl: int(bandwidth) for bandwidth, purl in zip(bandwidth_list, play_url_list)}
+        url_to_bandwidth = {
+            purl: int(bandwidth)
+            for bandwidth, purl in zip(bandwidth_list, play_url_list)
+        }
         if str(preferred_fps) in ('30', '60') and len(frame_rate_list) == len(play_url_list):
             target_fps = int(preferred_fps)
-            matched_urls = [purl for fps, purl in zip(frame_rate_list, play_url_list) if round(float(fps)) == target_fps]
+            matched_urls = [
+                purl for fps, purl in zip(frame_rate_list, play_url_list)
+                if round(float(fps)) == target_fps
+            ]
             if matched_urls:
                 play_url_list = matched_urls
-        play_url_list = sorted(play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True)
+        play_url_list = sorted(
+            play_url_list, key=lambda purl: url_to_bandwidth[purl], reverse=True
+        )
         return play_url_list
 
+    async def handle_login() -> OptionalStr:
+        cookie = await login_sooplive(username, password, proxy_addr=proxy_addr)
+        if cookie and 'AuthTicket=' in cookie:
+            print("sooplive platform login successful! Starting to fetch live streaming data...")
+            return cookie
+        return None
+
+    async def fetch_data(cookie: str) -> dict:
+        aid_token = await get_sooplive_tk(
+            url, rtype='aid', proxy_addr=proxy_addr, cookies=cookie
+        )
+        _anchor_name, _broad_no = await get_sooplive_tk(
+            url, rtype='info', proxy_addr=proxy_addr, cookies=cookie
+        )
+        _view_url_data = await get_sooplive_cdn_url(_broad_no, proxy_addr=proxy_addr)
+        _view_url = _view_url_data['view_url']
+        _m3u8_url = _view_url + '?aid=' + aid_token
+        result_data = {
+            "anchor_name": _anchor_name,
+            "is_live": True,
+            "m3u8_url": _m3u8_url,
+            'play_url_list': _soop_play_url_list_or_master(
+                await get_url_list(_m3u8_url), _m3u8_url
+            ),
+            'new_cookies': cookie
+        }
+        return result_data
+
+    # Room status codes must be handled independently of nickname presence.
+    # SOOP may encode numeric fields as either JSON numbers or numeric strings.
+    if watch_code == -3001:
+        print("sooplive live stream failed to retrieve, the live stream just ended.")
+        return result
+    if watch_code == -6001:
+        print("error message：Please check if the input sooplive live room address is correct.")
+        return result
+    if watch_code == -3002:
+        print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
+        print("Attempting to log in to the sooplive live streaming platform with your account and password, "
+              "please ensure it is configured.")
+        new_cookie = await handle_login()
+        if new_cookie:
+            return await fetch_data(new_cookie)
+        raise RuntimeError("sooplive login failed, please check if the account and password are correct")
+    if watch_code == -3004:
+        if cookies:
+            return await fetch_data(cookies)
+        raise RuntimeError("sooplive login failed, please check if the account and password are correct")
+
+    if api_result_code != 1:
+        if api_result_code == 0:
+            return result
+        raise RuntimeError(
+            f"SOOP watch API returned an unrecognized result code: {api_result_code} (HTTP={watch_status})"
+        )
+    if watch_code is None:
+        raise RuntimeError(
+            f"SOOP watch API response is missing its room status code (HTTP={watch_status})"
+        )
     if not anchor_name:
-        async def handle_login() -> OptionalStr:
-            cookie = await login_sooplive(username, password, proxy_addr=proxy_addr)
-            if cookie and 'AuthTicket=' in cookie:
-                print("sooplive platform login successful! Starting to fetch live streaming data...")
-                return cookie
+        raise RuntimeError(
+            f"SOOP watch API reports success but is missing the broadcaster nickname (HTTP={watch_status})"
+        )
 
-        async def fetch_data(cookie, _result) -> dict:
-            aid_token = await get_sooplive_tk(url, rtype='aid', proxy_addr=proxy_addr, cookies=cookie)
-            _anchor_name, _broad_no = await get_sooplive_tk(url, rtype='info', proxy_addr=proxy_addr, cookies=cookie)
-            _view_url_data = await get_sooplive_cdn_url(_broad_no, proxy_addr=proxy_addr)
-            _view_url = _view_url_data['view_url']
-            _m3u8_url = _view_url + '?aid=' + aid_token
-            _result |= {
-                "anchor_name": _anchor_name,
-                "is_live": True,
-                "m3u8_url": _m3u8_url,
-                'play_url_list': _soop_play_url_list_or_master(await get_url_list(_m3u8_url), _m3u8_url),
-                'new_cookies': cookie
-            }
-            return _result
-
-        watch_code = watch_data.get('code')
-        if watch_code == -3001:
-            print("sooplive live stream failed to retrieve, the live stream just ended.")
-            return result
-
-        elif watch_code == -3002:
-            print("sooplive live stream retrieval failed, the live needs 19+, you are not logged in.")
-            print("Attempting to log in to the sooplive live streaming platform with your account and password, "
-                  "please ensure it is configured.")
-            new_cookie = await handle_login()
-            if new_cookie and len(new_cookie) > 0:
-                return await fetch_data(new_cookie, result)
-            raise RuntimeError("sooplive login failed, please check if the account and password are correct")
-
-        elif watch_code == -3004:
-            if cookies and len(cookies) > 0:
-                return await fetch_data(cookies, result)
-            else:
-                raise RuntimeError("sooplive login failed, please check if the account and password are correct")
-        elif watch_code == -6001:
-            print("error message：Please check if the input sooplive live room address "
-                  "is correct.")
-            return result
-    if json_data['result'] == 1 and anchor_name:
-        broad_no = watch_data.get('broad_no')
-        hls_authentication_key = watch_data.get('hls_authentication_key')
-        if not broad_no or not hls_authentication_key:
-            raise RuntimeError("SOOP watch API reported a live stream without broad_no or authentication key")
-        view_url_data = await get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)
-        view_url = view_url_data['view_url']
-        m3u8_url = view_url + '?aid=' + hls_authentication_key
-        result |= {'is_live': True, 'm3u8_url': m3u8_url, 'play_url_list': _soop_play_url_list_or_master(await get_url_list(m3u8_url), m3u8_url)}
+    broad_no = watch_data.get('broad_no')
+    hls_authentication_key = watch_data.get('hls_authentication_key')
+    if not broad_no or not hls_authentication_key:
+        raise RuntimeError("SOOP watch API reported a live stream without broad_no or authentication key")
+    view_url_data = await get_sooplive_cdn_url(broad_no, proxy_addr=proxy_addr)
+    view_url = view_url_data['view_url']
+    m3u8_url = view_url + '?aid=' + hls_authentication_key
+    result |= {
+        'is_live': True,
+        'm3u8_url': m3u8_url,
+        'play_url_list': _soop_play_url_list_or_master(
+            await get_url_list(m3u8_url), m3u8_url
+        )
+    }
     result['new_cookies'] = None
     return result
-
 
 @trace_error_decorator
 async def get_netease_stream_data(url: str, proxy_addr: OptionalStr = None, cookies: OptionalStr = None) -> dict:
