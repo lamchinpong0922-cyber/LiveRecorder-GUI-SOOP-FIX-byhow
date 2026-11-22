@@ -1046,7 +1046,7 @@ async def get_sooplive_cdn_url(broad_no: str, proxy_addr: OptionalStr = None, co
         json_data = json.loads(json_str)
     except Exception as error:
         raw_text = str(json_str or '')
-            safe_preview = _mask_soop_sensitive_text(raw_text)
+        safe_preview = _mask_soop_sensitive_text(raw_text)
         diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_cdn_url; BNO={broad_no}; '
               f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
               f'preview={safe_preview[:700]!r}')
@@ -1257,7 +1257,7 @@ async def get_sooplive_tk(url: str, rtype: str, proxy_addr: OptionalStr = None, 
         json_data = json.loads(json_str)
     except Exception as error:
         raw_text = str(json_str or '')
-            safe_preview = _mask_soop_sensitive_text(raw_text)
+        safe_preview = _mask_soop_sensitive_text(raw_text)
         diagnostic = (f'SOOP fallback API JSON failure: stage=get_sooplive_tk_{rtype}; channel={bj_id}; '
               f'HTTP={status_code}; response_length={len(raw_text)}; error={type(error).__name__}: {error}; '
               f'preview={safe_preview[:700]!r}')
